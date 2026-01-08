@@ -21,7 +21,6 @@ app = Client(
 
 YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
 download_lock = asyncio.Lock()
-background_tasks = set()
 
 # ---------------- SAFE DELETE ----------------
 async def safe_delete(chat_id, message_id):
@@ -29,27 +28,6 @@ async def safe_delete(chat_id, message_id):
         await app.delete_messages(chat_id, message_id)
     except:
         pass
-
-# ---------------- COUNTDOWN ----------------
-async def countdown_and_cleanup(chat_id, media_msg_id, seconds=120):
-    msg = await app.send_message(chat_id, f"⏳ Self-destruct in {seconds}s")
-
-    step = 5
-    for remaining in range(seconds, 0, -step):
-        try:
-            await msg.edit_text(f"⏳ Self-destruct in {remaining}s")
-        except:
-            pass
-        await asyncio.sleep(step)
-
-    try:
-        await msg.edit_text("💥 BOOM")
-    except:
-        pass
-
-    await asyncio.sleep(1)
-    await safe_delete(chat_id, media_msg_id)
-    await safe_delete(chat_id, msg.id)
 
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
@@ -60,16 +38,22 @@ async def start(_, msg):
         "• Private → audio or video"
     )
 
-# ---------------- GROUP HANDLER ----------------
-@app.on_message(filters.text & filters.group)
+# =========================================================
+# GROUP HANDLER (AUTO MODE)
+# =========================================================
+@app.on_message(filters.text & (filters.group | filters.supergroup))
 async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
+    # delete user link immediately
     await safe_delete(msg.chat.id, msg.id)
+
     await process_download(msg, msg.text, "g720")
 
-# ---------------- PRIVATE HANDLER ----------------
+# =========================================================
+# PRIVATE HANDLER
+# =========================================================
 @app.on_message(filters.text & filters.private)
 async def private_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
@@ -121,6 +105,7 @@ async def process_download(msg, url, mode):
             if mode == "g720":
                 output = "video.mp4"
                 fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+
             elif mode.startswith("v"):
                 output = "video.mp4"
                 if mode == "v480":
@@ -129,9 +114,11 @@ async def process_download(msg, url, mode):
                     fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
                 else:
                     fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
+
             elif mode.startswith("a"):
                 output = "audio.mp3"
                 fmt = None
+
             else:
                 await status.edit("❌ Invalid option.")
                 return
@@ -161,21 +148,33 @@ async def process_download(msg, url, mode):
                 await status.edit("❌ Download failed.")
                 return
 
+            # remove downloading message
             await safe_delete(chat_id, status.id)
 
+            # send media
             if output.endswith(".mp4"):
                 sent = await app.send_video(chat_id, output, supports_streaming=True)
             else:
                 sent = await app.send_audio(chat_id, output)
 
-            if chat_type in ("group", "supergroup"):
-                task = app.loop.create_task(
-                    countdown_and_cleanup(chat_id, sent.id, 120)
-                )
-                background_tasks.add(task)
-                task.add_done_callback(background_tasks.discard)
-
             os.remove(output)
+
+            # GROUP: timed delete
+            if chat_type in ("group", "supergroup"):
+                notice = await app.send_message(
+                    chat_id,
+                    "⏳ This video will be deleted in 120 seconds"
+                )
+
+                await asyncio.sleep(120)
+
+                boom = await app.send_message(chat_id, "💥 BOOM")
+
+                await asyncio.sleep(1)
+
+                await safe_delete(chat_id, sent.id)
+                await safe_delete(chat_id, notice.id)
+                await safe_delete(chat_id, boom.id)
 
         except Exception as e:
             logging.exception(e)
