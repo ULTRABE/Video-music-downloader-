@@ -30,17 +30,14 @@ YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
 
 download_queue = asyncio.Queue()
 active_processes = {}   # task_id -> process
-active_users = set()    # users with active download
+active_users = set()    # user_ids with active download
 task_counter = 0
 
-# ---------------- START / ALIVE ----------------
-@app.on_message(filters.command("start"))
-async def start(_, msg):
-    await msg.reply(
-        "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
-        "• Private chat: audio or video options\n"
-        "• Group chat: paste link → auto video download"
-    )
+# ---------------- FORCE ALIVE ----------------
+@app.on_message(filters.all)
+async def force_alive(_, msg):
+    if msg.text == "/start":
+        await msg.reply("⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\nSend a YouTube link.")
 
 # ---------------- LINK HANDLER ----------------
 @app.on_message(filters.private | filters.group)
@@ -56,12 +53,6 @@ async def link_handler(_, msg):
         await msg.reply("⚠️ You already have an active download. Please wait.")
         return
 
-    # -------- GROUP CHAT: AUTO VIDEO --------
-    if msg.chat.type in ("group", "supergroup"):
-        await start_auto_video(msg, msg.text)
-        return
-
-    # -------- PRIVATE CHAT: OPTIONS --------
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{msg.text}"),
@@ -70,22 +61,7 @@ async def link_handler(_, msg):
     ])
     await msg.reply("Choose format:", reply_markup=kb)
 
-# ---------------- AUTO VIDEO (GROUPS) ----------------
-async def start_auto_video(msg, url):
-    global task_counter
-    user_id = msg.from_user.id
-
-    active_users.add(user_id)
-    task_counter += 1
-    task_id = str(task_counter)
-
-    status = await msg.reply("⬇️ Downloading best quality video…")
-
-    await download_queue.put(
-        (task_id, status, "auto_video", url, user_id)
-    )
-
-# ---------------- CALLBACKS (PRIVATE ONLY) ----------------
+# ---------------- CALLBACKS ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
     global task_counter
@@ -137,7 +113,7 @@ async def callbacks(_, cq):
         await cq.message.edit("❌ Download cancelled.")
         return
 
-    # -------- START PRIVATE DOWNLOAD --------
+    # ---------- START DOWNLOAD ----------
     if user_id in active_users:
         await cq.answer("You already have an active download.", show_alert=True)
         return
@@ -158,7 +134,7 @@ async def callbacks(_, cq):
         ])
     )
 
-    await download_queue.put((task_id, cq.message, data[0], data[1], user_id))
+    await download_queue.put((task_id, cq, data[0], data[1], user_id))
 
 # ---------------- AUTO DELETE ----------------
 async def auto_delete(chat_id, msg_id):
@@ -171,23 +147,11 @@ async def auto_delete(chat_id, msg_id):
 # ---------------- WORKER ----------------
 async def worker():
     while True:
-        task_id, msg_obj, mode, url, user_id = await download_queue.get()
-        chat_id = msg_obj.chat.id
+        task_id, cq, mode, url, user_id = await download_queue.get()
+        chat_id = cq.message.chat.id
 
         try:
-            # -------- GROUP AUTO VIDEO --------
-            if mode == "auto_video":
-                output = "out.mp4"
-                cmd = [
-                    "yt-dlp",
-                    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
-                    "--merge-output-format", "mp4",
-                    "-o", output,
-                    url
-                ]
-
-            # -------- AUDIO --------
-            elif mode.startswith("a"):
+            if mode.startswith("a"):
                 output = "out.mp3"
                 cmd = [
                     "yt-dlp",
@@ -197,8 +161,6 @@ async def worker():
                     "-o", output,
                     url
                 ]
-
-            # -------- VIDEO (PRIVATE) --------
             else:
                 res = {"v320":"320","v480":"480","v720":"720","v1080":"1080"}[mode]
                 fps = "fps<=30" if res != "1080" else "fps>30"
