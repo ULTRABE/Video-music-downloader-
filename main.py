@@ -5,7 +5,6 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ---------------- BASIC SETUP ----------------
 logging.basicConfig(level=logging.INFO)
 
 API_ID = int(os.environ["API_ID"])
@@ -13,7 +12,7 @@ API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 app = Client(
-    "nageshwar_v4",
+    "nageshwar_v4_2",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -21,7 +20,6 @@ app = Client(
 )
 
 YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
-
 download_lock = asyncio.Lock()
 
 # ---------------- START ----------------
@@ -29,8 +27,8 @@ download_lock = asyncio.Lock()
 async def start(_, msg):
     await msg.reply(
         "Send a YouTube link.\n\n"
-        "• Groups → auto video\n"
-        "• Private → choose audio/video"
+        "• Groups → auto 720p video (with audio)\n"
+        "• Private → choose audio or video"
     )
 
 # ---------------- LINK HANDLER ----------------
@@ -39,15 +37,15 @@ async def link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
-    # GROUP = AUTO VIDEO
+    # GROUP → AUTO 720p VIDEO WITH AUDIO
     if msg.chat.type in ("group", "supergroup"):
-        await process_download(msg, msg.text, mode="auto")
+        await process_download(msg, msg.text, "g720")
         return
 
-    # PRIVATE = OPTIONS
+    # PRIVATE → AUDIO / VIDEO OPTIONS
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{msg.text}"),
+            InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"a128|{msg.text}"),
             InlineKeyboardButton("🎬 Video", callback_data=f"video|{msg.text}")
         ]
     ])
@@ -58,18 +56,6 @@ async def link_handler(_, msg):
 async def callbacks(_, cq):
     action, url = cq.data.split("|", 1)
 
-    if action == "audio":
-        await cq.message.edit(
-            "Select audio quality:",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("128 kbps", callback_data=f"a128|{url}"),
-                    InlineKeyboardButton("320 kbps", callback_data=f"a320|{url}")
-                ]
-            ])
-        )
-        return
-
     if action == "video":
         await cq.message.edit(
             "Select video quality:",
@@ -77,6 +63,9 @@ async def callbacks(_, cq):
                 [
                     InlineKeyboardButton("480p", callback_data=f"v480|{url}"),
                     InlineKeyboardButton("720p", callback_data=f"v720|{url}")
+                ],
+                [
+                    InlineKeyboardButton("1080p 60fps", callback_data=f"v1080|{url}")
                 ]
             ])
         )
@@ -90,35 +79,41 @@ async def process_download(msg, url, mode):
         status = await msg.reply("⬇️ Downloading…")
 
         try:
-            if mode == "auto":
+            if mode == "g720":
                 output = "video.mp4"
+                fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+
+            elif mode.startswith("v"):
+                output = "video.mp4"
+                if mode == "v480":
+                    fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
+                elif mode == "v720":
+                    fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+                else:  # v1080
+                    fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
+
+            elif mode.startswith("a"):
+                output = "audio.mp3"
+                fmt = None
+
+            else:
+                await status.edit("❌ Invalid option.")
+                return
+
+            if fmt:
                 cmd = [
                     "yt-dlp",
-                    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+                    "-f", fmt,
                     "--merge-output-format", "mp4",
                     "-o", output,
                     url
                 ]
-
-            elif mode.startswith("a"):
-                output = "audio.mp3"
+            else:
                 cmd = [
                     "yt-dlp",
                     "-x",
                     "--audio-format", "mp3",
                     "--audio-quality", mode[1:],
-                    "-o", output,
-                    url
-                ]
-
-            else:
-                res = {"v480": "480", "v720": "720"}[mode]
-                output = "video.mp4"
-                cmd = [
-                    "yt-dlp",
-                    "-f",
-                    f"bestvideo[ext=mp4][height<={res}]+bestaudio[ext=m4a]",
-                    "--merge-output-format", "mp4",
                     "-o", output,
                     url
                 ]
