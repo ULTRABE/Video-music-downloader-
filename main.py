@@ -21,6 +21,7 @@ app = Client(
 
 YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
 download_lock = asyncio.Lock()
+background_tasks = set()
 
 # ---------------- SAFE DELETE ----------------
 async def safe_delete(chat_id, message_id):
@@ -168,9 +169,11 @@ async def process_download(msg, url, mode):
                 sent = await app.send_audio(chat_id, output)
 
             if chat_type in ("group", "supergroup"):
-                app.loop.create_task(
+                task = app.loop.create_task(
                     countdown_and_cleanup(chat_id, sent.id, 120)
                 )
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
             os.remove(output)
 
