@@ -59,18 +59,24 @@ async def start(_, msg):
         "• Private → audio or video"
     )
 
-# ---------------- LINK HANDLER ----------------
-@app.on_message(filters.text & (filters.private | filters.group))
-async def link_handler(_, msg):
+# =========================================================
+# GROUP-ONLY HANDLER (NO INLINE, AUTO DOWNLOAD)
+# =========================================================
+@app.on_message(filters.text & filters.group)
+async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
-    # GROUP → AUTO VIDEO
-    if msg.chat.type in ("group", "supergroup"):
-        await process_download(msg, msg.text, "g720")
+    await process_download(msg, msg.text, "g720")
+
+# =========================================================
+# PRIVATE-ONLY HANDLER (INLINE OPTIONS)
+# =========================================================
+@app.on_message(filters.text & filters.private)
+async def private_link_handler(_, msg):
+    if not re.match(YT_REGEX, msg.text):
         return
 
-    # PRIVATE → OPTIONS
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"a128|{msg.text}"),
@@ -79,10 +85,10 @@ async def link_handler(_, msg):
     ])
     await msg.reply("Choose format:", reply_markup=kb)
 
-# ---------------- CALLBACKS ----------------
+# ---------------- CALLBACKS (PRIVATE ONLY) ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
-    # BLOCK callbacks in groups
+    # HARD BLOCK CALLBACKS IN GROUPS
     if cq.message.chat.type != "private":
         await cq.answer("Use this in private chat.", show_alert=True)
         return
@@ -171,6 +177,7 @@ async def process_download(msg, url, mode):
             else:
                 sent = await app.send_audio(chat_id, output)
 
+            # GROUP CLEANUP + COUNTDOWN
             if chat_type in ("group", "supergroup"):
                 await safe_delete(chat_id, status.id)
                 asyncio.create_task(
