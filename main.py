@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import asyncio
 import logging
 from dotenv import load_dotenv
@@ -16,7 +15,6 @@ load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID"))
 
 # ---------------- BOT ----------------
 app = Client(
@@ -29,57 +27,41 @@ app = Client(
 )
 
 YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
-AUTH_FILE = "authorized_chats.json"
 
 download_queue = asyncio.Queue()
-active_processes = {}
+active_processes = {}   # task_id -> process
+active_users = set()    # users with active download
 task_counter = 0
 
-# ---------------- AUTH ----------------
-def load_auth():
-    if not os.path.exists(AUTH_FILE):
-        return []
-    with open(AUTH_FILE, "r") as f:
-        return json.load(f)
-
-def save_auth(data):
-    with open(AUTH_FILE, "w") as f:
-        json.dump(data, f)
-
-def chat_allowed(chat):
-    return chat.type == "private" or chat.id in load_auth()
-
-# ---------------- COMMANDS ----------------
+# ---------------- START / ALIVE ----------------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
-    if chat_allowed(msg.chat):
-        await msg.reply("⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\nSend a YouTube link.")
-
-@app.on_message(filters.command("auth"))
-async def auth(_, msg):
-    if msg.from_user.id != OWNER_ID:
-        return
-    try:
-        cid = int(msg.text.split()[1])
-    except:
-        await msg.reply("Usage: /auth <chat_id>")
-        return
-
-    data = load_auth()
-    if cid not in data:
-        data.append(cid)
-        save_auth(data)
-
-    await msg.reply(f"Authorized chat: `{cid}`")
+    await msg.reply(
+        "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
+        "• Private chat: audio or video options\n"
+        "• Group chat: paste link → auto video download"
+    )
 
 # ---------------- LINK HANDLER ----------------
-@app.on_message(filters.text & (filters.private | filters.group))
+@app.on_message(filters.private | filters.group)
 async def link_handler(_, msg):
-    if not chat_allowed(msg.chat):
+    if not msg.text:
         return
     if not re.match(YT_REGEX, msg.text):
         return
 
+    user_id = msg.from_user.id
+
+    if user_id in active_users:
+        await msg.reply("⚠️ You already have an active download. Please wait.")
+        return
+
+    # -------- GROUP CHAT: AUTO VIDEO --------
+    if msg.chat.type in ("group", "supergroup"):
+        await start_auto_video(msg, msg.text)
+        return
+
+    # -------- PRIVATE CHAT: OPTIONS --------
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{msg.text}"),
@@ -88,15 +70,28 @@ async def link_handler(_, msg):
     ])
     await msg.reply("Choose format:", reply_markup=kb)
 
-# ---------------- CALLBACKS ----------------
+# ---------------- AUTO VIDEO (GROUPS) ----------------
+async def start_auto_video(msg, url):
+    global task_counter
+    user_id = msg.from_user.id
+
+    active_users.add(user_id)
+    task_counter += 1
+    task_id = str(task_counter)
+
+    status = await msg.reply("⬇️ Downloading best quality video…")
+
+    await download_queue.put(
+        (task_id, status, "auto_video", url, user_id)
+    )
+
+# ---------------- CALLBACKS (PRIVATE ONLY) ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
     global task_counter
 
-    if not chat_allowed(cq.message.chat):
-        return
-
     data = cq.data.split("|")
+    user_id = cq.from_user.id
 
     if data[0] == "audio":
         await cq.message.edit(
@@ -129,7 +124,7 @@ async def callbacks(_, cq):
 
     if data[0] == "cancel":
         task_id, owner_id = data[1], int(data[2])
-        if cq.from_user.id != owner_id:
+        if user_id != owner_id:
             await cq.answer("Not your download", show_alert=True)
             return
 
@@ -138,10 +133,16 @@ async def callbacks(_, cq):
             proc.kill()
             active_processes.pop(task_id, None)
 
+        active_users.discard(owner_id)
         await cq.message.edit("❌ Download cancelled.")
         return
 
-    # enqueue job
+    # -------- START PRIVATE DOWNLOAD --------
+    if user_id in active_users:
+        await cq.answer("You already have an active download.", show_alert=True)
+        return
+
+    active_users.add(user_id)
     task_counter += 1
     task_id = str(task_counter)
 
@@ -151,13 +152,13 @@ async def callbacks(_, cq):
             [
                 InlineKeyboardButton(
                     "❌ Cancel",
-                    callback_data=f"cancel|{task_id}|{cq.from_user.id}"
+                    callback_data=f"cancel|{task_id}|{user_id}"
                 )
             ]
         ])
     )
 
-    await download_queue.put((task_id, cq, data[0], data[1], cq.from_user.id))
+    await download_queue.put((task_id, cq.message, data[0], data[1], user_id))
 
 # ---------------- AUTO DELETE ----------------
 async def auto_delete(chat_id, msg_id):
@@ -170,11 +171,23 @@ async def auto_delete(chat_id, msg_id):
 # ---------------- WORKER ----------------
 async def worker():
     while True:
-        task_id, cq, mode, url, owner = await download_queue.get()
-        chat_id = cq.message.chat.id
+        task_id, msg_obj, mode, url, user_id = await download_queue.get()
+        chat_id = msg_obj.chat.id
 
         try:
-            if mode.startswith("a"):
+            # -------- GROUP AUTO VIDEO --------
+            if mode == "auto_video":
+                output = "out.mp4"
+                cmd = [
+                    "yt-dlp",
+                    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+                    "--merge-output-format", "mp4",
+                    "-o", output,
+                    url
+                ]
+
+            # -------- AUDIO --------
+            elif mode.startswith("a"):
                 output = "out.mp3"
                 cmd = [
                     "yt-dlp",
@@ -184,6 +197,8 @@ async def worker():
                     "-o", output,
                     url
                 ]
+
+            # -------- VIDEO (PRIVATE) --------
             else:
                 res = {"v320":"320","v480":"480","v720":"720","v1080":"1080"}[mode]
                 fps = "fps<=30" if res != "1080" else "fps>30"
@@ -214,6 +229,7 @@ async def worker():
         except Exception as e:
             logging.exception(e)
 
+        active_users.discard(user_id)
         download_queue.task_done()
 
 # ---------------- MAIN ----------------
