@@ -60,17 +60,23 @@ async def start(_, msg):
     )
 
 # =========================================================
-# GROUP-ONLY HANDLER (NO INLINE, AUTO DOWNLOAD)
+# GROUP-ONLY HANDLER (STRICT FLOW)
 # =========================================================
 @app.on_message(filters.text & filters.group)
 async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
+    chat_id = msg.chat.id
+
+    # 1️⃣ DELETE USER LINK IMMEDIATELY
+    await safe_delete(chat_id, msg.id)
+
+    # 2️⃣ START DOWNLOAD
     await process_download(msg, msg.text, "g720")
 
 # =========================================================
-# PRIVATE-ONLY HANDLER (INLINE OPTIONS)
+# PRIVATE-ONLY HANDLER
 # =========================================================
 @app.on_message(filters.text & filters.private)
 async def private_link_handler(_, msg):
@@ -85,10 +91,9 @@ async def private_link_handler(_, msg):
     ])
     await msg.reply("Choose format:", reply_markup=kb)
 
-# ---------------- CALLBACKS (PRIVATE ONLY) ----------------
+# ---------------- CALLBACKS ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
-    # HARD BLOCK CALLBACKS IN GROUPS
     if cq.message.chat.type != "private":
         await cq.answer("Use this in private chat.", show_alert=True)
         return
@@ -117,19 +122,14 @@ async def process_download(msg, url, mode):
     async with download_lock:
         chat_id = msg.chat.id
         chat_type = msg.chat.type
-        original_msg_id = msg.id
 
-        # DELETE USER LINK IMMEDIATELY (GROUP ONLY)
-        if chat_type in ("group", "supergroup"):
-            await safe_delete(chat_id, original_msg_id)
-
+        # 3️⃣ SHOW DOWNLOADING
         status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
             if mode == "g720":
                 output = "video.mp4"
                 fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-
             elif mode.startswith("v"):
                 output = "video.mp4"
                 if mode == "v480":
@@ -138,11 +138,9 @@ async def process_download(msg, url, mode):
                     fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
                 else:
                     fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
-
             elif mode.startswith("a"):
                 output = "audio.mp3"
                 fmt = None
-
             else:
                 await status.edit("❌ Invalid option.")
                 return
@@ -172,14 +170,17 @@ async def process_download(msg, url, mode):
                 await status.edit("❌ Download failed.")
                 return
 
+            # 4️⃣ DELETE DOWNLOADING BEFORE SENDING MEDIA
+            await safe_delete(chat_id, status.id)
+
+            # 5️⃣ SEND MEDIA
             if output.endswith(".mp4"):
                 sent = await app.send_video(chat_id, output, supports_streaming=True)
             else:
                 sent = await app.send_audio(chat_id, output)
 
-            # GROUP CLEANUP + COUNTDOWN
+            # 6️⃣ START COUNTDOWN (GROUP ONLY)
             if chat_type in ("group", "supergroup"):
-                await safe_delete(chat_id, status.id)
                 asyncio.create_task(
                     countdown_and_cleanup(chat_id, sent.id, 120)
                 )
