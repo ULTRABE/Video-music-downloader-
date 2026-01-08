@@ -22,6 +22,38 @@ app = Client(
 YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
 download_lock = asyncio.Lock()
 
+# ---------------- SAFE DELETE ----------------
+async def safe_delete(chat_id, message_id):
+    try:
+        await app.delete_messages(chat_id, message_id)
+    except:
+        pass
+
+# ---------------- COUNTDOWN ----------------
+async def countdown_and_cleanup(chat_id, media_msg_id, seconds=120):
+    msg = await app.send_message(
+        chat_id,
+        f"⏳ Self-destruct in {seconds}s"
+    )
+
+    step = 5
+    for remaining in range(seconds, 0, -step):
+        try:
+            await msg.edit_text(f"⏳ Self-destruct in {remaining}s")
+        except:
+            pass
+        await asyncio.sleep(step)
+
+    try:
+        await msg.edit_text("💥 BOOM")
+    except:
+        pass
+
+    await asyncio.sleep(1)
+
+    await safe_delete(chat_id, media_msg_id)
+    await safe_delete(chat_id, msg.id)
+
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
@@ -126,9 +158,14 @@ async def process_download(msg, url, mode):
                 return
 
             if output.endswith(".mp4"):
-                await app.send_video(msg.chat.id, output, supports_streaming=True)
+                sent = await app.send_video(msg.chat.id, output, supports_streaming=True)
             else:
-                await app.send_audio(msg.chat.id, output)
+                sent = await app.send_audio(msg.chat.id, output)
+
+            if msg.chat.type in ("group", "supergroup"):
+                asyncio.create_task(
+                    countdown_and_cleanup(msg.chat.id, sent.id, 120)
+                )
 
             os.remove(output)
             await status.delete()
