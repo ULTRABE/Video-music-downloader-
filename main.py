@@ -46,9 +46,7 @@ async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
-    # delete user link immediately
     await safe_delete(msg.chat.id, msg.id)
-
     await process_download(msg, msg.text, "g720")
 
 # =========================================================
@@ -102,7 +100,7 @@ async def process_download(msg, url, mode):
         status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
-            # -------- FORMAT SELECTION --------
+            # -------- FORMAT --------
             if mode == "g720":
                 output = "video.mp4"
                 fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
@@ -113,7 +111,7 @@ async def process_download(msg, url, mode):
                     fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
                 elif mode == "v720":
                     fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-                else:  # v1080
+                else:
                     fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
 
             elif mode.startswith("a"):
@@ -151,41 +149,30 @@ async def process_download(msg, url, mode):
                 await status.edit("❌ Download failed.")
                 return
 
-            # remove downloading message
             await safe_delete(chat_id, status.id)
 
             # -------- SEND MEDIA --------
             if output.endswith(".mp4"):
-                sent = await app.send_video(
-                    chat_id,
-                    output,
-                    supports_streaming=True
-                )
+                sent = await app.send_video(chat_id, output, supports_streaming=True)
             else:
                 sent = await app.send_audio(chat_id, output)
 
             os.remove(output)
 
-            # -------- GROUP AUTO DELETE --------
+            # -------- GROUP AUTO DELETE (FINAL SIMPLE LOGIC) --------
             if chat_type in ("group", "supergroup"):
-                try:
-                    notice = await app.send_message(
-                        chat_id,
-                        "⏳ This video will be deleted in 120 seconds"
-                    )
+                await asyncio.sleep(60)
 
-                    await asyncio.sleep(120)
-
-                    boom = await app.send_message(chat_id, "💥 BOOM")
-
+                countdown_msgs = []
+                for i in range(5, 0, -1):
+                    m = await app.send_message(chat_id, str(i))
+                    countdown_msgs.append(m)
                     await asyncio.sleep(1)
 
-                    await safe_delete(chat_id, sent.id)
-                    await safe_delete(chat_id, notice.id)
-                    await safe_delete(chat_id, boom.id)
+                await safe_delete(chat_id, sent.id)
 
-                except Exception:
-                    logging.exception("Auto-delete flow failed")
+                for m in countdown_msgs:
+                    await safe_delete(chat_id, m.id)
 
         except Exception:
             logging.exception("Download failed")
