@@ -59,25 +59,16 @@ async def start(_, msg):
         "• Private → audio or video"
     )
 
-# =========================================================
-# GROUP-ONLY HANDLER (STRICT FLOW)
-# =========================================================
+# ---------------- GROUP HANDLER ----------------
 @app.on_message(filters.text & filters.group)
 async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
-    chat_id = msg.chat.id
-
-    # 1️⃣ DELETE USER LINK IMMEDIATELY
-    await safe_delete(chat_id, msg.id)
-
-    # 2️⃣ START DOWNLOAD
+    await safe_delete(msg.chat.id, msg.id)
     await process_download(msg, msg.text, "g720")
 
-# =========================================================
-# PRIVATE-ONLY HANDLER
-# =========================================================
+# ---------------- PRIVATE HANDLER ----------------
 @app.on_message(filters.text & filters.private)
 async def private_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
@@ -123,7 +114,6 @@ async def process_download(msg, url, mode):
         chat_id = msg.chat.id
         chat_type = msg.chat.type
 
-        # 3️⃣ SHOW DOWNLOADING
         status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
@@ -170,18 +160,15 @@ async def process_download(msg, url, mode):
                 await status.edit("❌ Download failed.")
                 return
 
-            # 4️⃣ DELETE DOWNLOADING BEFORE SENDING MEDIA
             await safe_delete(chat_id, status.id)
 
-            # 5️⃣ SEND MEDIA
             if output.endswith(".mp4"):
                 sent = await app.send_video(chat_id, output, supports_streaming=True)
             else:
                 sent = await app.send_audio(chat_id, output)
 
-            # 6️⃣ START COUNTDOWN (GROUP ONLY)
             if chat_type in ("group", "supergroup"):
-                asyncio.create_task(
+                app.loop.create_task(
                     countdown_and_cleanup(chat_id, sent.id, 120)
                 )
 
