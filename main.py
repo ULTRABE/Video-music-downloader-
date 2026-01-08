@@ -41,7 +41,7 @@ async def start(_, msg):
 # =========================================================
 # GROUP HANDLER (AUTO MODE)
 # =========================================================
-@app.on_message(filters.text & (filters.group | filters.supergroup))
+@app.on_message(filters.text & (filters.group))
 async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
