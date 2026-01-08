@@ -92,23 +92,20 @@ async def process_download(msg, url, mode):
         status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
-            # -------- FORMAT --------
-            if mode == "g720":
-                height, width = 1280, 720
+            # -------- VIDEO MODES --------
+            if mode == "g720" or mode == "v720":
+                width, height = 720, 1280
                 fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
 
             elif mode == "v480":
-                height, width = 854, 480
+                width, height = 480, 854
                 fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
 
-            elif mode == "v720":
-                height, width = 1280, 720
-                fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-
             elif mode == "v1080":
-                height, width = 1920, 1080
+                width, height = 1080, 1920
                 fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
 
+            # -------- AUDIO --------
             elif mode.startswith("a"):
                 output = "audio.mp3"
                 cmd = [
@@ -119,10 +116,12 @@ async def process_download(msg, url, mode):
                     "-o", output,
                     url
                 ]
+
                 proc = await asyncio.create_subprocess_exec(*cmd)
                 await proc.wait()
+
                 await safe_delete(chat_id, status.id)
-                await app.send_audio(chat_id, output)
+                sent = await app.send_audio(chat_id, output)
                 os.remove(output)
                 return
 
@@ -132,14 +131,14 @@ async def process_download(msg, url, mode):
 
             output = "video.mp4"
 
-            # -------- COMMAND --------
+            # -------- DOWNLOAD COMMAND --------
             cmd = [
                 "yt-dlp",
                 "-f", fmt,
                 "--merge-output-format", "mp4",
                 "--postprocessor-args",
                 (
-                    f"ffmpeg:-vf scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                    f"-vf scale={width}:{height}:force_original_aspect_ratio=decrease,"
                     f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2 "
                     "-movflags +faststart"
                 ),
@@ -147,7 +146,6 @@ async def process_download(msg, url, mode):
                 url
             ]
 
-            # -------- DOWNLOAD --------
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
 
@@ -157,7 +155,6 @@ async def process_download(msg, url, mode):
 
             await safe_delete(chat_id, status.id)
 
-            # -------- SEND VIDEO --------
             sent = await app.send_video(
                 chat_id,
                 output,
@@ -169,7 +166,7 @@ async def process_download(msg, url, mode):
 
             os.remove(output)
 
-            # -------- GROUP AUTO DELETE --------
+            # -------- AUTO DELETE IN GROUPS --------
             if chat_type in ("group", "supergroup"):
                 await asyncio.sleep(120)
                 await safe_delete(chat_id, sent.id)
