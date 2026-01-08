@@ -12,7 +12,7 @@ API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 app = Client(
-    "nageshwar_v4_2",
+    "nageshwar_v4_final",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -31,10 +31,7 @@ async def safe_delete(chat_id, message_id):
 
 # ---------------- COUNTDOWN ----------------
 async def countdown_and_cleanup(chat_id, media_msg_id, seconds=120):
-    msg = await app.send_message(
-        chat_id,
-        f"⏳ Self-destruct in {seconds}s"
-    )
+    msg = await app.send_message(chat_id, f"⏳ Self-destruct in {seconds}s")
 
     step = 5
     for remaining in range(seconds, 0, -step):
@@ -59,8 +56,8 @@ async def countdown_and_cleanup(chat_id, media_msg_id, seconds=120):
 async def start(_, msg):
     await msg.reply(
         "Send a YouTube link.\n\n"
-        "• Groups → auto 720p video (with audio)\n"
-        "• Private → choose audio or video"
+        "• Groups → auto 720p video\n"
+        "• Private → audio or video"
     )
 
 # ---------------- LINK HANDLER ----------------
@@ -69,12 +66,12 @@ async def link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
-    # GROUP → AUTO 720p VIDEO WITH AUDIO
+    # GROUP → AUTO MODE
     if msg.chat.type in ("group", "supergroup"):
         await process_download(msg, msg.text, "g720")
         return
 
-    # PRIVATE → AUDIO / VIDEO OPTIONS
+    # PRIVATE → OPTIONS
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"a128|{msg.text}"),
@@ -108,7 +105,15 @@ async def callbacks(_, cq):
 # ---------------- DOWNLOAD CORE ----------------
 async def process_download(msg, url, mode):
     async with download_lock:
-        status = await msg.reply("⬇️ Downloading…")
+        chat_id = msg.chat.id
+        chat_type = msg.chat.type
+        original_msg_id = msg.id
+
+        # DELETE USER LINK IMMEDIATELY (GROUP ONLY)
+        if chat_type in ("group", "supergroup"):
+            await safe_delete(chat_id, original_msg_id)
+
+        status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
             if mode == "g720":
@@ -121,7 +126,7 @@ async def process_download(msg, url, mode):
                     fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
                 elif mode == "v720":
                     fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-                else:  # v1080
+                else:
                     fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
 
             elif mode.startswith("a"):
@@ -158,17 +163,19 @@ async def process_download(msg, url, mode):
                 return
 
             if output.endswith(".mp4"):
-                sent = await app.send_video(msg.chat.id, output, supports_streaming=True)
+                sent = await app.send_video(chat_id, output, supports_streaming=True)
             else:
-                sent = await app.send_audio(msg.chat.id, output)
+                sent = await app.send_audio(chat_id, output)
 
-            if msg.chat.type in ("group", "supergroup"):
+            # DELETE DOWNLOADING MESSAGE (GROUP ONLY)
+            if chat_type in ("group", "supergroup"):
+                await safe_delete(chat_id, status.id)
+
                 asyncio.create_task(
-                    countdown_and_cleanup(msg.chat.id, sent.id, 120)
+                    countdown_and_cleanup(chat_id, sent.id, 120)
                 )
 
             os.remove(output)
-            await status.delete()
 
         except Exception as e:
             logging.exception(e)
