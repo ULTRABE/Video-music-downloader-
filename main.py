@@ -37,6 +37,13 @@ async def safe_delete(chat_id, message_id):
     except:
         pass
 
+# ---------------- FILE FINDER ----------------
+def find_video_file():
+    for f in os.listdir("."):
+        if f.lower().endswith((".mp4", ".mkv", ".webm")):
+            return f
+    return None
+
 # ---------------- URL CLEAN + DETECT ----------------
 def clean_url(text: str) -> str:
     return text.strip().split()[0]
@@ -77,7 +84,6 @@ async def group_handler(_, msg):
 
     await safe_delete(msg.chat.id, msg.id)
 
-    # groups always auto 720p
     await process_download(msg, url, platform, "g720")
 
 # ================= PRIVATE HANDLER =================
@@ -138,21 +144,25 @@ async def process_download(msg, url, platform, mode):
         try:
             # -------- AUDIO (YT ONLY) --------
             if platform == "yt" and mode.startswith("a"):
-                output = "audio.mp3"
                 cmd = [
                     "yt-dlp",
                     "-x",
                     "--audio-format", "mp3",
                     "--audio-quality", mode[1:],
-                    "-o", output,
+                    "-o", "%(title).80s.%(ext)s",
                     url
                 ]
                 proc = await asyncio.create_subprocess_exec(*cmd)
                 await proc.wait()
 
+                file = find_video_file()
+                if not file:
+                    await status.edit(eren("Download failed."))
+                    return
+
                 await safe_delete(chat_id, status.id)
-                await app.send_audio(chat_id, output)
-                os.remove(output)
+                await app.send_audio(chat_id, file)
+                os.remove(file)
                 return
 
             # -------- VIDEO FORMAT --------
@@ -173,21 +183,25 @@ async def process_download(msg, url, platform, mode):
                 else:
                     fmt = "bv*+ba/b"
 
-            output = "video.mp4"
             cmd = [
                 "yt-dlp",
                 "-f", fmt,
                 "--merge-output-format", "mp4",
-                "-o", output,
+                "-o", "%(title).80s.%(ext)s",
                 url
             ]
 
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
 
+            file = find_video_file()
+            if not file:
+                await status.edit(eren("Download failed (private or unsupported link)."))
+                return
+
             await safe_delete(chat_id, status.id)
-            await app.send_video(chat_id, output, supports_streaming=True)
-            os.remove(output)
+            await app.send_video(chat_id, file, supports_streaming=True)
+            os.remove(file)
 
         except Exception:
             logging.exception("Download failed")
