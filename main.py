@@ -92,21 +92,8 @@ async def process_download(msg, url, mode):
         status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
-            # -------- VIDEO MODES --------
-            if mode == "g720" or mode == "v720":
-                width, height = 720, 1280
-                fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-
-            elif mode == "v480":
-                width, height = 480, 854
-                fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
-
-            elif mode == "v1080":
-                width, height = 1080, 1920
-                fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
-
             # -------- AUDIO --------
-            elif mode.startswith("a"):
+            if mode.startswith("a"):
                 output = "audio.mp3"
                 cmd = [
                     "yt-dlp",
@@ -120,28 +107,32 @@ async def process_download(msg, url, mode):
                 proc = await asyncio.create_subprocess_exec(*cmd)
                 await proc.wait()
 
+                if not os.path.exists(output):
+                    await status.edit("❌ Download failed.")
+                    return
+
                 await safe_delete(chat_id, status.id)
                 sent = await app.send_audio(chat_id, output)
                 os.remove(output)
                 return
 
+            # -------- VIDEO --------
+            if mode in ("g720", "v720"):
+                fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+            elif mode == "v480":
+                fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
+            elif mode == "v1080":
+                fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
             else:
                 await status.edit("❌ Invalid option.")
                 return
 
             output = "video.mp4"
 
-            # -------- DOWNLOAD COMMAND --------
             cmd = [
                 "yt-dlp",
                 "-f", fmt,
                 "--merge-output-format", "mp4",
-                "--postprocessor-args",
-                (
-                    f"-vf scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2 "
-                    "-movflags +faststart"
-                ),
                 "-o", output,
                 url
             ]
@@ -159,14 +150,11 @@ async def process_download(msg, url, mode):
                 chat_id,
                 output,
                 supports_streaming=True,
-                width=width,
-                height=height,
                 caption="💓 @nagudownloaderbot" if chat_type in ("group", "supergroup") else None
             )
 
             os.remove(output)
 
-            # -------- AUTO DELETE IN GROUPS --------
             if chat_type in ("group", "supergroup"):
                 await asyncio.sleep(120)
                 await safe_delete(chat_id, sent.id)
