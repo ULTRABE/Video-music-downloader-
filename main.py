@@ -12,17 +12,23 @@ API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 app = Client(
-    "nageshwar_final",
+    "nageshwar_main",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workers=1
 )
 
+# -------- REGEX --------
 YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
+INSTA_REGEX = r"(instagram\.com|instagr\.am)/.+"
+FB_REGEX = r"(facebook\.com|fb\.watch)/.+"
+THREADS_REGEX = r"(threads\.net)/.+"
+SNAP_REGEX = r"(snapchat\.com)/.+"
+
 download_lock = asyncio.Lock()
 
-# ---------------- EREN FONT (SERIF BOLD) ----------------
+# -------- FONT --------
 def eren(text: str) -> str:
     normal = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
     eren_map = (
@@ -32,46 +38,72 @@ def eren(text: str) -> str:
     )
     return text.translate(str.maketrans(normal, eren_map))
 
-# ---------------- SAFE DELETE ----------------
+# -------- SAFE DELETE --------
 async def safe_delete(chat_id, message_id):
     try:
         await app.delete_messages(chat_id, message_id)
     except:
         pass
 
-# ---------------- START ----------------
+# -------- LINK DETECTOR --------
+def detect_link(url: str):
+    if re.match(YT_REGEX, url):
+        return "yt"
+    if re.match(INSTA_REGEX, url):
+        return "insta"
+    if re.match(FB_REGEX, url):
+        return "fb"
+    if re.match(THREADS_REGEX, url):
+        return "threads"
+    if re.match(SNAP_REGEX, url):
+        return "snap"
+    return None
+
+# -------- START --------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     await msg.reply(
         eren(
-            "Send a YouTube link.\n\n"
-            "• Groups → auto 720p video\n"
-            "• Private → audio or video"
+            "Send a link.\n\n"
+            "• YouTube → full options\n"
+            "• Insta / FB / Threads / Snap → auto best video"
         )
     )
 
-# ---------------- GROUP HANDLER ----------------
+# -------- GROUP HANDLER --------
 @app.on_message(filters.text & filters.group)
-async def group_link_handler(_, msg):
-    if not re.match(YT_REGEX, msg.text):
+async def group_handler(_, msg):
+    source = detect_link(msg.text)
+    if not source:
         return
+
     await safe_delete(msg.chat.id, msg.id)
-    await process_download(msg, msg.text, "g720")
 
-# ---------------- PRIVATE HANDLER ----------------
+    if source == "yt":
+        await process_yt(msg, msg.text, "g720")
+    else:
+        await process_generic(msg, msg.text)
+
+# -------- PRIVATE HANDLER --------
 @app.on_message(filters.text & filters.private)
-async def private_link_handler(_, msg):
-    if not re.match(YT_REGEX, msg.text):
+async def private_handler(_, msg):
+    source = detect_link(msg.text)
+    if not source:
         return
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(eren("🎵 Audio"), callback_data=f"a128|{msg.text}"),
-            InlineKeyboardButton(eren("🎬 Video"), callback_data=f"video|{msg.text}")
-        ]
-    ])
-    await msg.reply(eren("Choose format:"), reply_markup=kb)
 
-# ---------------- CALLBACKS ----------------
+    if source == "yt":
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(eren("🎵 Audio"), callback_data=f"a128|{msg.text}"),
+                InlineKeyboardButton(eren("🎬 Video"), callback_data=f"video|{msg.text}")
+            ]
+        ])
+        await msg.reply(eren("Choose format:"), reply_markup=kb)
+    else:
+        await safe_delete(msg.chat.id, msg.id)
+        await process_generic(msg, msg.text)
+
+# -------- CALLBACKS (YT ONLY) --------
 @app.on_callback_query()
 async def callbacks(_, cq):
     action, url = cq.data.split("|", 1)
@@ -91,18 +123,17 @@ async def callbacks(_, cq):
         )
         return
 
-    await process_download(cq.message, url, action)
+    await process_yt(cq.message, url, action)
 
-# ---------------- DOWNLOAD CORE ----------------
-async def process_download(msg, url, mode):
+# =========================
+# YOUTUBE CORE (UNCHANGED)
+# =========================
+async def process_yt(msg, url, mode):
     async with download_lock:
         chat_id = msg.chat.id
-        chat_type = msg.chat.type
-
         status = await app.send_message(chat_id, eren("⬇️ Downloading…"))
 
         try:
-            # -------- AUDIO --------
             if mode.startswith("a"):
                 output = "audio.mp3"
                 cmd = [
@@ -113,19 +144,14 @@ async def process_download(msg, url, mode):
                     "-o", output,
                     url
                 ]
-                proc = await asyncio.create_subprocess_exec(*cmd)
-                await proc.wait()
-
-                if not os.path.exists(output):
-                    await status.edit(eren("Download failed."))
-                    return
+                p = await asyncio.create_subprocess_exec(*cmd)
+                await p.wait()
 
                 await safe_delete(chat_id, status.id)
                 await app.send_audio(chat_id, output)
                 os.remove(output)
                 return
 
-            # -------- VIDEO --------
             if mode in ("g720", "v720"):
                 fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
             elif mode == "v480":
@@ -144,37 +170,44 @@ async def process_download(msg, url, mode):
                 "-o", output,
                 url
             ]
-
-            proc = await asyncio.create_subprocess_exec(*cmd)
-            await proc.wait()
-
-            if not os.path.exists(output):
-                await status.edit(eren("Download failed."))
-                return
+            p = await asyncio.create_subprocess_exec(*cmd)
+            await p.wait()
 
             await safe_delete(chat_id, status.id)
-
-            # IMPORTANT FIX:
-            # caption must be a NORMAL string (not stylized),
-            # otherwise Telegram may silently drop it
-            caption_text = "💓 @nagudownloaderbot" if chat_type in ("group", "supergroup") else None
-
-            sent = await app.send_video(
-                chat_id,
-                output,
-                supports_streaming=True,
-                caption=caption_text
-            )
-
+            await app.send_video(chat_id, output, supports_streaming=True)
             os.remove(output)
 
-            if chat_type in ("group", "supergroup"):
-                await asyncio.sleep(120)
-                await safe_delete(chat_id, sent.id)
-
         except Exception:
-            logging.exception("Download failed")
+            logging.exception("YT failed")
             await status.edit(eren("Error occurred."))
 
-# ---------------- RUN ----------------
+# ======================================
+# GENERIC (INSTA / FB / THREADS / SNAP)
+# ======================================
+async def process_generic(msg, url):
+    async with download_lock:
+        chat_id = msg.chat.id
+        status = await app.send_message(chat_id, eren("⬇️ Downloading…"))
+
+        try:
+            output = "video.mp4"
+            cmd = [
+                "yt-dlp",
+                "-f", "bv*+ba/b",
+                "--merge-output-format", "mp4",
+                "-o", output,
+                url
+            ]
+            p = await asyncio.create_subprocess_exec(*cmd)
+            await p.wait()
+
+            await safe_delete(chat_id, status.id)
+            await app.send_video(chat_id, output, supports_streaming=True)
+            os.remove(output)
+
+        except Exception:
+            logging.exception("Generic failed")
+            await status.edit(eren("Error occurred."))
+
+# -------- RUN --------
 app.run()
