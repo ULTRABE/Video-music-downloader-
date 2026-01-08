@@ -68,9 +68,6 @@ async def private_link_handler(_, msg):
 # ---------------- CALLBACKS ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
-    if cq.message.chat.type != "private":
-        await cq.answer("Use this in private chat.", show_alert=True)
-        return
 
     action, url = cq.data.split("|", 1)
 
