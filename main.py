@@ -81,7 +81,7 @@ async def link_handler(_, msg):
     await msg.reply("Choose format:", reply_markup=kb)
 
 # ---------------- CALLBACKS ----------------
-@app.on_callback_query()
+@app.on_callback_query(filters.private)
 async def callbacks(_, cq):
     action, url = cq.data.split("|", 1)
 
