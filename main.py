@@ -217,7 +217,6 @@ async def worker():
         download_queue.task_done()
 
 # ---------------- MAIN ----------------
-asyncio.run(main())
 if __name__ == "__main__":
     app.start()
     app.loop.create_task(worker())
