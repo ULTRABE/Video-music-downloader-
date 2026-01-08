@@ -41,7 +41,7 @@ async def start(_, msg):
 # =========================================================
 # GROUP HANDLER (AUTO MODE)
 # =========================================================
-@app.on_message(filters.text & (filters.group))
+@app.on_message(filters.text & filters.group)
 async def group_link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
@@ -102,6 +102,7 @@ async def process_download(msg, url, mode):
         status = await app.send_message(chat_id, "⬇️ Downloading…")
 
         try:
+            # -------- FORMAT SELECTION --------
             if mode == "g720":
                 output = "video.mp4"
                 fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
@@ -112,7 +113,7 @@ async def process_download(msg, url, mode):
                     fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
                 elif mode == "v720":
                     fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-                else:
+                else:  # v1080
                     fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
 
             elif mode.startswith("a"):
@@ -123,6 +124,7 @@ async def process_download(msg, url, mode):
                 await status.edit("❌ Invalid option.")
                 return
 
+            # -------- COMMAND --------
             if fmt:
                 cmd = [
                     "yt-dlp",
@@ -141,6 +143,7 @@ async def process_download(msg, url, mode):
                     url
                 ]
 
+            # -------- DOWNLOAD --------
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
 
@@ -151,33 +154,41 @@ async def process_download(msg, url, mode):
             # remove downloading message
             await safe_delete(chat_id, status.id)
 
-            # send media
+            # -------- SEND MEDIA --------
             if output.endswith(".mp4"):
-                sent = await app.send_video(chat_id, output, supports_streaming=True)
+                sent = await app.send_video(
+                    chat_id,
+                    output,
+                    supports_streaming=True
+                )
             else:
                 sent = await app.send_audio(chat_id, output)
 
             os.remove(output)
 
-            # GROUP: timed delete
+            # -------- GROUP AUTO DELETE --------
             if chat_type in ("group", "supergroup"):
-                notice = await app.send_message(
-                    chat_id,
-                    "⏳ This video will be deleted in 120 seconds"
-                )
+                try:
+                    notice = await app.send_message(
+                        chat_id,
+                        "⏳ This video will be deleted in 120 seconds"
+                    )
 
-                await asyncio.sleep(120)
+                    await asyncio.sleep(120)
 
-                boom = await app.send_message(chat_id, "💥 BOOM")
+                    boom = await app.send_message(chat_id, "💥 BOOM")
 
-                await asyncio.sleep(1)
+                    await asyncio.sleep(1)
 
-                await safe_delete(chat_id, sent.id)
-                await safe_delete(chat_id, notice.id)
-                await safe_delete(chat_id, boom.id)
+                    await safe_delete(chat_id, sent.id)
+                    await safe_delete(chat_id, notice.id)
+                    await safe_delete(chat_id, boom.id)
 
-        except Exception as e:
-            logging.exception(e)
+                except Exception:
+                    logging.exception("Auto-delete flow failed")
+
+        except Exception:
+            logging.exception("Download failed")
             await status.edit("❌ Error occurred.")
 
 # ---------------- RUN ----------------
