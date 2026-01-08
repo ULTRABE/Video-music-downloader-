@@ -217,10 +217,9 @@ async def worker():
         download_queue.task_done()
 
 # ---------------- MAIN ----------------
-async def main():
-    await app.start()
-    asyncio.create_task(worker())
-    await idle()
-    await app.stop()
-
 asyncio.run(main())
+if __name__ == "__main__":
+    app.start()
+    app.loop.create_task(worker())
+    idle()
+    app.stop()
