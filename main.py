@@ -12,7 +12,7 @@ API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 app = Client(
-    "nageshwar_v4_final",
+    "nageshwar_final",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -47,7 +47,6 @@ async def countdown_and_cleanup(chat_id, media_msg_id, seconds=120):
         pass
 
     await asyncio.sleep(1)
-
     await safe_delete(chat_id, media_msg_id)
     await safe_delete(chat_id, msg.id)
 
@@ -66,7 +65,7 @@ async def link_handler(_, msg):
     if not re.match(YT_REGEX, msg.text):
         return
 
-    # GROUP → AUTO MODE
+    # GROUP → AUTO VIDEO
     if msg.chat.type in ("group", "supergroup"):
         await process_download(msg, msg.text, "g720")
         return
@@ -81,8 +80,13 @@ async def link_handler(_, msg):
     await msg.reply("Choose format:", reply_markup=kb)
 
 # ---------------- CALLBACKS ----------------
-@app.on_callback_query(filters.private)
+@app.on_callback_query()
 async def callbacks(_, cq):
+    # BLOCK callbacks in groups
+    if cq.message.chat.type != "private":
+        await cq.answer("Use this in private chat.", show_alert=True)
+        return
+
     action, url = cq.data.split("|", 1)
 
     if action == "video":
@@ -167,10 +171,8 @@ async def process_download(msg, url, mode):
             else:
                 sent = await app.send_audio(chat_id, output)
 
-            # DELETE DOWNLOADING MESSAGE (GROUP ONLY)
             if chat_type in ("group", "supergroup"):
                 await safe_delete(chat_id, status.id)
-
                 asyncio.create_task(
                     countdown_and_cleanup(chat_id, sent.id, 120)
                 )
