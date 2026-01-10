@@ -1,5 +1,4 @@
 import os
-import re
 import asyncio
 import logging
 from dotenv import load_dotenv
@@ -23,19 +22,16 @@ app = Client(
     workers=1
 )
 
-URL_REGEX = r"https?://\S+"
-
 download_queue = asyncio.Queue()
 active_users = set()
-task_counter = 0
 
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     await msg.reply(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
-        "Private: audio / video options\n"
-        "Group: paste link → auto fast video"
+        "• Private: audio / video options\n"
+        "• Group: paste link → auto video"
     )
 
 # =========================================================
@@ -43,12 +39,20 @@ async def start(_, msg):
 # =========================================================
 @app.on_message(filters.group)
 async def group_auto(_, msg):
-    # Explicitly allow both group & supergroup
+    # Allow only real group types
     if msg.chat.type not in ("group", "supergroup"):
         return
 
-    content = msg.text or msg.caption or ""
-    if not content or not re.search(URL_REGEX, content):
+    if not msg.entities:
+        return
+
+    url = None
+    for e in msg.entities:
+        if e.type == "url":
+            url = msg.text[e.offset : e.offset + e.length]
+            break
+
+    if not url:
         return
 
     user_id = msg.from_user.id
@@ -57,36 +61,29 @@ async def group_auto(_, msg):
 
     active_users.add(user_id)
 
-    # delete user message ASAP
+    # delete user message immediately
     try:
         await msg.delete()
     except:
         pass
 
-    global task_counter
-    task_counter += 1
-
-    await download_queue.put(
-        (msg.chat.id, "auto_video", content, user_id)
-    )
+    await download_queue.put((msg.chat.id, url, user_id))
 
 # =========================================================
 # ===================== PRIVATE MODE ======================
 # =========================================================
-@app.on_message(filters.private)
+@app.on_message(filters.private & filters.text)
 async def private_links(_, msg):
-    content = msg.text or msg.caption or ""
-    if not content:
+    if not msg.entities:
         return
 
-    # extract URL from entities if needed
-    if not re.search(URL_REGEX, content) and msg.entities:
-        for e in msg.entities:
-            if e.type in ("url", "text_link"):
-                content = e.url or content
-                break
+    url = None
+    for e in msg.entities:
+        if e.type == "url":
+            url = msg.text[e.offset : e.offset + e.length]
+            break
 
-    if not re.search(URL_REGEX, content):
+    if not url:
         return
 
     user_id = msg.from_user.id
@@ -96,16 +93,15 @@ async def private_links(_, msg):
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{content}"),
-            InlineKeyboardButton("🎬 Video", callback_data=f"video|{content}")
+            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{url}"),
+            InlineKeyboardButton("🎬 Video", callback_data=f"video|{url}")
         ]
     ])
     await msg.reply("Choose format:", reply_markup=kb)
 
-# ---------------- CALLBACKS (PRIVATE ONLY) ----------------
+# ---------------- CALLBACKS (PRIVATE) ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
-    global task_counter
     data = cq.data.split("|")
     user_id = cq.from_user.id
     url = data[1]
@@ -143,65 +139,33 @@ async def callbacks(_, cq):
         return
 
     active_users.add(user_id)
-    task_counter += 1
-
     await cq.message.edit("Queued…")
-    await download_queue.put(
-        (cq.message.chat.id, data[0], url, user_id)
-    )
+    await download_queue.put((cq.message.chat.id, url, user_id))
 
 # =========================================================
 # ======================== WORKER =========================
 # =========================================================
 async def worker():
     while True:
-        chat_id, mode, url, user_id = await download_queue.get()
+        chat_id, url, user_id = await download_queue.get()
 
         try:
-            if mode == "auto_video":
-                output = "out.mp4"
-                cmd = [
-                    "yt-dlp",
-                    "-f", "best[ext=mp4][fps<=30]/best[ext=mp4]/best",
-                    "--concurrent-fragments", "4",
-                    "--no-part",
-                    "--merge-output-format", "mp4",
-                    "-o", output,
-                    url
-                ]
-
-            elif mode.startswith("a"):
-                output = "out.mp3"
-                cmd = [
-                    "yt-dlp",
-                    "-x",
-                    "--audio-format", "mp3",
-                    "--audio-quality", mode[1:],
-                    "-o", output,
-                    url
-                ]
-
-            else:  # private video
-                res = {"v480":"480","v720":"720","v1080":"1080"}[mode]
-                output = "out.mp4"
-                cmd = [
-                    "yt-dlp",
-                    "-f",
-                    f"best[ext=mp4][height<={res}][fps<=30]/best",
-                    "--concurrent-fragments", "4",
-                    "--merge-output-format", "mp4",
-                    "-o", output,
-                    url
-                ]
+            output = "out.mp4"
+            cmd = [
+                "yt-dlp",
+                "-f", "best[ext=mp4][fps<=30]/best[ext=mp4]/best",
+                "--concurrent-fragments", "4",
+                "--no-part",
+                "--merge-output-format", "mp4",
+                "-o", output,
+                url
+            ]
 
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
 
             if os.path.exists(output):
-                if output.endswith(".mp4"):
-                    await app.send_video(chat_id, output, supports_streaming=True)
-                else:
-                    await app.send_audio(chat_id, output)
+                await app.send_video(chat_id, output, supports_streaming=True)
                 os.remove(output)
 
         except Exception:
