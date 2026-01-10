@@ -1,211 +1,238 @@
 import os
+import re
 import asyncio
 import logging
-from pyrogram import Client, filters
+from dotenv import load_dotenv
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+# ---------------- ENV ----------------
+load_dotenv()
 
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# ---------------- BOT ----------------
 app = Client(
-    "all_in_one_bot",
+    "nageshwar",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
+    in_memory=True,
     workers=1
 )
 
-download_lock = asyncio.Lock()
+YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
 
-# ---------------- FONT ----------------
-def eren(text: str) -> str:
-    normal = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-    styled = (
-        "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙"
-        "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳"
-        "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
-    )
-    return text.translate(str.maketrans(normal, styled))
-
-# ---------------- SAFE DELETE ----------------
-async def safe_delete(chat_id, message_id):
-    try:
-        await app.delete_messages(chat_id, message_id)
-    except:
-        pass
-
-# ---------------- FILE FINDER ----------------
-def find_video_file():
-    for f in os.listdir("."):
-        if f.lower().endswith((".mp4", ".mkv", ".webm")):
-            return f
-    return None
-
-# ---------------- URL CLEAN + DETECT ----------------
-def clean_url(text: str) -> str:
-    return text.strip().split()[0]
-
-def detect_platform(text: str):
-    url = clean_url(text)
-
-    if "youtu.be" in url or "youtube.com" in url:
-        return "yt", url
-    if "instagram.com" in url:
-        return "insta", url
-    if "facebook.com" in url or "fb.watch" in url:
-        return "fb", url
-    if "threads.net" in url:
-        return "threads", url
-    if "snapchat.com" in url:
-        return "snap", url
-
-    return None, None
+download_queue = asyncio.Queue()
+active_processes = {}
+active_users = set()
+task_counter = 0
 
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     await msg.reply(
-        eren(
-            "Send a link.\n\n"
-            "• YouTube → audio + video\n"
-            "• Instagram / Facebook / Threads / Snapchat → video only"
-        )
+        "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
+        "• Private: audio or video options\n"
+        "• Group: paste link → instant best video"
     )
 
-# ================= GROUP HANDLER =================
-@app.on_message(filters.text & filters.group)
-async def group_handler(_, msg):
-    platform, url = detect_platform(msg.text)
-    if not platform:
+# ---------------- LINK HANDLER ----------------
+@app.on_message(filters.private | filters.group)
+async def link_handler(_, msg):
+    if not msg.text:
+        return
+    if not re.match(YT_REGEX, msg.text):
         return
 
-    await safe_delete(msg.chat.id, msg.id)
+    user_id = msg.from_user.id
 
-    await process_download(msg, url, platform, "g720")
-
-# ================= PRIVATE HANDLER =================
-@app.on_message(filters.text & filters.private)
-async def private_handler(_, msg):
-    platform, url = detect_platform(msg.text)
-    if not platform:
+    if user_id in active_users:
+        await msg.reply("⚠️ You already have an active download.")
         return
 
-    if platform == "yt":
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(eren("🎵 Audio"), callback_data=f"yt|a128|{url}"),
-                InlineKeyboardButton(eren("🎬 Video"), callback_data=f"yt|video|{url}")
-            ]
-        ])
-        await msg.reply(eren("Choose format:"), reply_markup=kb)
-    else:
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(eren("480p"), callback_data=f"{platform}|v480|{url}"),
-                InlineKeyboardButton(eren("720p"), callback_data=f"{platform}|v720|{url}")
-            ],
-            [
-                InlineKeyboardButton(eren("Best"), callback_data=f"{platform}|vbest|{url}")
-            ]
-        ])
-        await msg.reply(eren("Select video quality:"), reply_markup=kb)
+    # -------- GROUP: AUTO FAST VIDEO --------
+    if msg.chat.type in ("group", "supergroup"):
+        active_users.add(user_id)
+        global task_counter
+        task_counter += 1
+        task_id = str(task_counter)
 
-# ================= CALLBACKS =================
+        status = await msg.reply("⬇️ Downloading best quality video…")
+        await download_queue.put(
+            (task_id, status, "auto_video", msg.text, user_id)
+        )
+        return
+
+    # -------- PRIVATE: OPTIONS --------
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{msg.text}"),
+            InlineKeyboardButton("🎬 Video", callback_data=f"video|{msg.text}")
+        ]
+    ])
+    await msg.reply("Choose format:", reply_markup=kb)
+
+# ---------------- CALLBACKS (PRIVATE) ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
-    platform, action, url = cq.data.split("|", 2)
+    global task_counter
+    data = cq.data.split("|")
+    user_id = cq.from_user.id
 
-    if platform == "yt" and action == "video":
+    if data[0] == "audio":
         await cq.message.edit(
-            eren("Select video quality:"),
+            "Select audio quality:",
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton(eren("480p"), callback_data=f"yt|v480|{url}"),
-                    InlineKeyboardButton(eren("720p"), callback_data=f"yt|v720|{url}")
-                ],
-                [
-                    InlineKeyboardButton(eren("1080p 60fps"), callback_data=f"yt|v1080|{url}")
+                    InlineKeyboardButton("64 kbps", callback_data=f"a64|{data[1]}"),
+                    InlineKeyboardButton("128 kbps", callback_data=f"a128|{data[1]}"),
+                    InlineKeyboardButton("320 kbps", callback_data=f"a320|{data[1]}")
                 ]
             ])
         )
         return
 
-    await process_download(cq.message, url, platform, action)
+    if data[0] == "video":
+        await cq.message.edit(
+            "Select video quality:",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("320p", callback_data=f"v320|{data[1]}"),
+                    InlineKeyboardButton("480p", callback_data=f"v480|{data[1]}")
+                ],
+                [
+                    InlineKeyboardButton("720p", callback_data=f"v720|{data[1]}"),
+                    InlineKeyboardButton("1080p", callback_data=f"v1080|{data[1]}")
+                ]
+            ])
+        )
+        return
 
-# ================= DOWNLOAD CORE =================
-async def process_download(msg, url, platform, mode):
-    async with download_lock:
-        chat_id = msg.chat.id
-        status = await app.send_message(chat_id, eren("⬇️ Downloading…"))
+    if data[0] == "cancel":
+        task_id, owner = data[1], int(data[2])
+        if user_id != owner:
+            await cq.answer("Not your download", show_alert=True)
+            return
+
+        proc = active_processes.get(task_id)
+        if proc:
+            proc.kill()
+            active_processes.pop(task_id, None)
+
+        active_users.discard(owner)
+        await cq.message.edit("❌ Download cancelled.")
+        return
+
+    # -------- START PRIVATE DOWNLOAD --------
+    if user_id in active_users:
+        await cq.answer("You already have an active download.", show_alert=True)
+        return
+
+    active_users.add(user_id)
+    task_counter += 1
+    task_id = str(task_counter)
+
+    await cq.message.edit(
+        "Queued…",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "❌ Cancel",
+                    callback_data=f"cancel|{task_id}|{user_id}"
+                )
+            ]
+        ])
+    )
+
+    await download_queue.put((task_id, cq.message, data[0], data[1], user_id))
+
+# ---------------- AUTO DELETE ----------------
+async def auto_delete(chat_id, msg_id):
+    await asyncio.sleep(300)
+    try:
+        await app.delete_messages(chat_id, msg_id)
+    except:
+        pass
+
+# ---------------- WORKER (FAST) ----------------
+async def worker():
+    while True:
+        task_id, msg_obj, mode, url, user_id = await download_queue.get()
+        chat_id = msg_obj.chat.id
 
         try:
-            # -------- AUDIO (YT ONLY) --------
-            if platform == "yt" and mode.startswith("a"):
+            # -------- GROUP AUTO FAST VIDEO --------
+            if mode == "auto_video":
+                output = "out.mp4"
+                cmd = [
+                    "yt-dlp",
+                    "-f", "best[ext=mp4][fps<=30]/best[ext=mp4]/best",
+                    "--concurrent-fragments", "4",
+                    "--no-part",
+                    "--no-post-overwrites",
+                    "--merge-output-format", "mp4",
+                    "-o", output,
+                    url
+                ]
+
+            # -------- AUDIO (PRIVATE) --------
+            elif mode.startswith("a"):
+                output = "out.mp3"
                 cmd = [
                     "yt-dlp",
                     "-x",
                     "--audio-format", "mp3",
                     "--audio-quality", mode[1:],
-                    "-o", "%(title).80s.%(ext)s",
+                    "-o", output,
                     url
                 ]
-                proc = await asyncio.create_subprocess_exec(*cmd)
-                await proc.wait()
 
-                file = find_video_file()
-                if not file:
-                    await status.edit(eren("Download failed."))
-                    return
-
-                await safe_delete(chat_id, status.id)
-                await app.send_audio(chat_id, file)
-                os.remove(file)
-                return
-
-            # -------- VIDEO FORMAT --------
-            if platform == "yt":
-                if mode in ("g720", "v720"):
-                    fmt = "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
-                elif mode == "v480":
-                    fmt = "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]"
-                elif mode == "v1080":
-                    fmt = "bestvideo[ext=mp4][height<=1080][fps>30]+bestaudio[ext=m4a]"
-                else:
-                    fmt = "bv*+ba/b"
+            # -------- VIDEO (PRIVATE) --------
             else:
-                if mode in ("g720", "v720"):
-                    fmt = "bestvideo[height<=720]+bestaudio/best"
-                elif mode == "v480":
-                    fmt = "bestvideo[height<=480]+bestaudio/best"
-                else:
-                    fmt = "bv*+ba/b"
-
-            cmd = [
-                "yt-dlp",
-                "-f", fmt,
-                "--merge-output-format", "mp4",
-                "-o", "%(title).80s.%(ext)s",
-                url
-            ]
+                res = {"v320":"320","v480":"480","v720":"720","v1080":"1080"}[mode]
+                fps = "fps<=30" if res != "1080" else "fps>30"
+                output = "out.mp4"
+                cmd = [
+                    "yt-dlp",
+                    "-f",
+                    f"best[ext=mp4][height<={res}][{fps}]/best[ext=mp4]/best",
+                    "--concurrent-fragments", "4",
+                    "--no-part",
+                    "--no-post-overwrites",
+                    "--merge-output-format", "mp4",
+                    "-o", output,
+                    url
+                ]
 
             proc = await asyncio.create_subprocess_exec(*cmd)
+            active_processes[task_id] = proc
             await proc.wait()
+            active_processes.pop(task_id, None)
 
-            file = find_video_file()
-            if not file:
-                await status.edit(eren("Download failed (private or unsupported link)."))
-                return
+            if os.path.exists(output):
+                if output.endswith(".mp4"):
+                    sent = await app.send_video(chat_id, output, supports_streaming=True)
+                else:
+                    sent = await app.send_audio(chat_id, output)
 
-            await safe_delete(chat_id, status.id)
-            await app.send_video(chat_id, file, supports_streaming=True)
-            os.remove(file)
+                asyncio.create_task(auto_delete(chat_id, sent.id))
+                os.remove(output)
 
-        except Exception:
-            logging.exception("Download failed")
-            await status.edit(eren("Error occurred."))
+        except Exception as e:
+            logging.exception(e)
 
-# ================= RUN =================
-app.run()
+        active_users.discard(user_id)
+        download_queue.task_done()
+
+# ---------------- MAIN ----------------
+if __name__ == "__main__":
+    app.start()
+    app.loop.create_task(worker())
+    idle()
+    app.stop()
