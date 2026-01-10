@@ -27,7 +27,6 @@ URL_REGEX = r"https?://\S+"
 
 download_queue = asyncio.Queue()
 active_users = set()
-active_processes = {}
 task_counter = 0
 
 # ---------------- START ----------------
@@ -42,12 +41,14 @@ async def start(_, msg):
 # =========================================================
 # ====================== GROUP MODE =======================
 # =========================================================
-@app.on_message(filters.group | filters.supergroup)
+@app.on_message(filters.group)
 async def group_auto(_, msg):
-    content = msg.text or msg.caption or ""
-    if not content:
+    # Explicitly allow both group & supergroup
+    if msg.chat.type not in ("group", "supergroup"):
         return
-    if not re.search(URL_REGEX, content):
+
+    content = msg.text or msg.caption or ""
+    if not content or not re.search(URL_REGEX, content):
         return
 
     user_id = msg.from_user.id
@@ -56,6 +57,7 @@ async def group_auto(_, msg):
 
     active_users.add(user_id)
 
+    # delete user message ASAP
     try:
         await msg.delete()
     except:
@@ -63,10 +65,9 @@ async def group_auto(_, msg):
 
     global task_counter
     task_counter += 1
-    task_id = str(task_counter)
 
     await download_queue.put(
-        (task_id, msg.chat.id, "auto_video", content, user_id)
+        (msg.chat.id, "auto_video", content, user_id)
     )
 
 # =========================================================
@@ -74,9 +75,18 @@ async def group_auto(_, msg):
 # =========================================================
 @app.on_message(filters.private)
 async def private_links(_, msg):
-    if not msg.text:
+    content = msg.text or msg.caption or ""
+    if not content:
         return
-    if not re.search(URL_REGEX, msg.text):
+
+    # extract URL from entities if needed
+    if not re.search(URL_REGEX, content) and msg.entities:
+        for e in msg.entities:
+            if e.type in ("url", "text_link"):
+                content = e.url or content
+                break
+
+    if not re.search(URL_REGEX, content):
         return
 
     user_id = msg.from_user.id
@@ -86,8 +96,8 @@ async def private_links(_, msg):
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{msg.text}"),
-            InlineKeyboardButton("🎬 Video", callback_data=f"video|{msg.text}")
+            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{content}"),
+            InlineKeyboardButton("🎬 Video", callback_data=f"video|{content}")
         ]
     ])
     await msg.reply("Choose format:", reply_markup=kb)
@@ -98,15 +108,20 @@ async def callbacks(_, cq):
     global task_counter
     data = cq.data.split("|")
     user_id = cq.from_user.id
+    url = data[1]
+
+    if user_id in active_users:
+        await cq.answer("Already downloading", show_alert=True)
+        return
 
     if data[0] == "audio":
         await cq.message.edit(
             "Audio quality:",
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("64 kbps", callback_data=f"a64|{data[1]}"),
-                    InlineKeyboardButton("128 kbps", callback_data=f"a128|{data[1]}"),
-                    InlineKeyboardButton("320 kbps", callback_data=f"a320|{data[1]}")
+                    InlineKeyboardButton("64 kbps", callback_data=f"a64|{url}"),
+                    InlineKeyboardButton("128 kbps", callback_data=f"a128|{url}"),
+                    InlineKeyboardButton("320 kbps", callback_data=f"a320|{url}")
                 ]
             ])
         )
@@ -117,27 +132,22 @@ async def callbacks(_, cq):
             "Video quality:",
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("480p", callback_data=f"v480|{data[1]}"),
-                    InlineKeyboardButton("720p", callback_data=f"v720|{data[1]}")
+                    InlineKeyboardButton("480p", callback_data=f"v480|{url}"),
+                    InlineKeyboardButton("720p", callback_data=f"v720|{url}")
                 ],
                 [
-                    InlineKeyboardButton("1080p", callback_data=f"v1080|{data[1]}")
+                    InlineKeyboardButton("1080p", callback_data=f"v1080|{url}")
                 ]
             ])
         )
         return
 
-    if user_id in active_users:
-        await cq.answer("Already downloading", show_alert=True)
-        return
-
     active_users.add(user_id)
     task_counter += 1
-    task_id = str(task_counter)
 
     await cq.message.edit("Queued…")
     await download_queue.put(
-        (task_id, cq.message.chat.id, data[0], data[1], user_id)
+        (cq.message.chat.id, data[0], url, user_id)
     )
 
 # =========================================================
@@ -145,12 +155,11 @@ async def callbacks(_, cq):
 # =========================================================
 async def worker():
     while True:
-        task_id, chat_id, mode, url, user_id = await download_queue.get()
+        chat_id, mode, url, user_id = await download_queue.get()
 
         try:
-            output = "out.mp4"
-
             if mode == "auto_video":
+                output = "out.mp4"
                 cmd = [
                     "yt-dlp",
                     "-f", "best[ext=mp4][fps<=30]/best[ext=mp4]/best",
@@ -172,11 +181,13 @@ async def worker():
                     url
                 ]
 
-            else:
+            else:  # private video
                 res = {"v480":"480","v720":"720","v1080":"1080"}[mode]
+                output = "out.mp4"
                 cmd = [
                     "yt-dlp",
-                    "-f", f"best[ext=mp4][height<={res}]/best",
+                    "-f",
+                    f"best[ext=mp4][height<={res}][fps<=30]/best",
                     "--concurrent-fragments", "4",
                     "--merge-output-format", "mp4",
                     "-o", output,
@@ -184,19 +195,21 @@ async def worker():
                 ]
 
             proc = await asyncio.create_subprocess_exec(*cmd)
-            active_processes[task_id] = proc
             await proc.wait()
-            active_processes.pop(task_id, None)
 
             if os.path.exists(output):
-                await app.send_video(chat_id, output, supports_streaming=True)
+                if output.endswith(".mp4"):
+                    await app.send_video(chat_id, output, supports_streaming=True)
+                else:
+                    await app.send_audio(chat_id, output)
                 os.remove(output)
 
         except Exception:
             logging.exception("Download failed")
 
-        active_users.discard(user_id)
-        download_queue.task_done()
+        finally:
+            active_users.discard(user_id)
+            download_queue.task_done()
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
