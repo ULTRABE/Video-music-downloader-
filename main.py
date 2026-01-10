@@ -39,15 +39,15 @@ async def start(_, msg):
     await msg.reply(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
         "• Private: audio or video options\n"
-        "• Group: paste link → instant best video"
+        "• Group: paste link → auto fast video"
     )
 
-# ---------------- LINK HANDLER ----------------
+# ---------------- LINK HANDLER (FIXED) ----------------
 @app.on_message(filters.private | filters.group)
 async def link_handler(_, msg):
     if not msg.text:
         return
-    if not re.match(YT_REGEX, msg.text):
+    if not re.search(YT_REGEX, msg.text):   # ✅ FIX HERE
         return
 
     user_id = msg.from_user.id
