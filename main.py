@@ -6,17 +6,13 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
-
-# ---------------- ENV ----------------
 load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ---------------- BOT ----------------
 app = Client(
     "nageshwar",
     api_id=API_ID,
@@ -26,12 +22,13 @@ app = Client(
     workers=1
 )
 
-YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
+YT_REGEX = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/\S+"
 
 download_queue = asyncio.Queue()
 active_processes = {}
 active_users = set()
 task_counter = 0
+
 
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
@@ -42,12 +39,24 @@ async def start(_, msg):
         "• Group: paste link → auto fast video"
     )
 
-# ---------------- LINK HANDLER (FIXED) ----------------
+
+# ---------------- LINK HANDLER (FIXED PROPERLY) ----------------
 @app.on_message(filters.private | filters.group)
 async def link_handler(_, msg):
-    if not msg.text:
+    # Collect text from all possible places
+    content = msg.text or msg.caption or ""
+
+    # If still empty, try entities (group preview case)
+    if not content and msg.entities:
+        for ent in msg.entities:
+            if ent.type in ("url", "text_link"):
+                content = ent.url or msg.text or ""
+                break
+
+    if not content:
         return
-    if not re.search(YT_REGEX, msg.text):   # ✅ FIX HERE
+
+    if not re.search(YT_REGEX, content):
         return
 
     user_id = msg.from_user.id
@@ -56,7 +65,7 @@ async def link_handler(_, msg):
         await msg.reply("⚠️ You already have an active download.")
         return
 
-    # -------- GROUP: AUTO FAST VIDEO --------
+    # -------- GROUP AUTO VIDEO --------
     if msg.chat.type in ("group", "supergroup"):
         active_users.add(user_id)
         global task_counter
@@ -65,20 +74,21 @@ async def link_handler(_, msg):
 
         status = await msg.reply("⬇️ Downloading best quality video…")
         await download_queue.put(
-            (task_id, status, "auto_video", msg.text, user_id)
+            (task_id, status, "auto_video", content, user_id)
         )
         return
 
-    # -------- PRIVATE: OPTIONS --------
+    # -------- PRIVATE OPTIONS --------
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{msg.text}"),
-            InlineKeyboardButton("🎬 Video", callback_data=f"video|{msg.text}")
+            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{content}"),
+            InlineKeyboardButton("🎬 Video", callback_data=f"video|{content}")
         ]
     ])
     await msg.reply("Choose format:", reply_markup=kb)
 
-# ---------------- CALLBACKS (PRIVATE) ----------------
+
+# ---------------- CALLBACKS ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
     global task_counter
@@ -129,7 +139,6 @@ async def callbacks(_, cq):
         await cq.message.edit("❌ Download cancelled.")
         return
 
-    # -------- START PRIVATE DOWNLOAD --------
     if user_id in active_users:
         await cq.answer("You already have an active download.", show_alert=True)
         return
@@ -152,13 +161,6 @@ async def callbacks(_, cq):
 
     await download_queue.put((task_id, cq.message, data[0], data[1], user_id))
 
-# ---------------- AUTO DELETE ----------------
-async def auto_delete(chat_id, msg_id):
-    await asyncio.sleep(300)
-    try:
-        await app.delete_messages(chat_id, msg_id)
-    except:
-        pass
 
 # ---------------- WORKER (FAST) ----------------
 async def worker():
@@ -167,7 +169,6 @@ async def worker():
         chat_id = msg_obj.chat.id
 
         try:
-            # -------- GROUP AUTO FAST VIDEO --------
             if mode == "auto_video":
                 output = "out.mp4"
                 cmd = [
@@ -181,7 +182,6 @@ async def worker():
                     url
                 ]
 
-            # -------- AUDIO (PRIVATE) --------
             elif mode.startswith("a"):
                 output = "out.mp3"
                 cmd = [
@@ -193,7 +193,6 @@ async def worker():
                     url
                 ]
 
-            # -------- VIDEO (PRIVATE) --------
             else:
                 res = {"v320":"320","v480":"480","v720":"720","v1080":"1080"}[mode]
                 fps = "fps<=30" if res != "1080" else "fps>30"
@@ -216,19 +215,15 @@ async def worker():
             active_processes.pop(task_id, None)
 
             if os.path.exists(output):
-                if output.endswith(".mp4"):
-                    sent = await app.send_video(chat_id, output, supports_streaming=True)
-                else:
-                    sent = await app.send_audio(chat_id, output)
-
-                asyncio.create_task(auto_delete(chat_id, sent.id))
+                await app.send_video(chat_id, output, supports_streaming=True)
                 os.remove(output)
 
-        except Exception as e:
-            logging.exception(e)
+        except Exception:
+            logging.exception("Download failed")
 
         active_users.discard(user_id)
         download_queue.task_done()
+
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
