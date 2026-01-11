@@ -3,8 +3,10 @@ import re
 import asyncio
 import logging
 from dotenv import load_dotenv
+
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +39,7 @@ active_users = set()
 active_processes = {}
 task_counter = 0
 
-# tagall state (per chat)
+# tagall per-chat state
 TAG_RUNNING = {}
 
 # ---------------- START ----------------
@@ -46,12 +48,12 @@ async def start(_, msg):
     await msg.reply(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
         "• Paste link → auto video (GC & PVT)\n"
-        "• Private only: /options <link>\n"
-        "• /tagall → tag all\n"
+        "• Private: /options <link>\n"
+        "• /tagall → tag members\n"
         "• /endtag → stop tagging"
     )
 
-# ---------------- TAG ALL (FIXED) ----------------
+# ---------------- TAG ALL (FLOOD SAFE) ----------------
 @app.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client, message):
     chat_id = message.chat.id
@@ -60,31 +62,39 @@ async def tag_all(client, message):
         return
 
     TAG_RUNNING[chat_id] = True
-
     chunk = ""
-    MAX_LEN = 540  # telegram safe
+    MAX_LEN = 3500
 
-    async for member in client.get_chat_members(chat_id):
-        if not TAG_RUNNING.get(chat_id):
-            break
+    try:
+        async for member in client.get_chat_members(chat_id):
+            if not TAG_RUNNING.get(chat_id):
+                break
 
-        user = member.user
-        if user.is_bot or not user.first_name:
-            continue
+            user = member.user
+            if user.is_bot or not user.first_name:
+                continue
 
-        mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>\n'
+            mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>\n'
 
-        if len(chunk) + len(mention) > MAX_LEN:
-            await message.reply_text(chunk, disable_web_page_preview=True)
-            chunk = ""
-            await asyncio.sleep(1)
+            if len(chunk) + len(mention) > MAX_LEN:
+                try:
+                    await message.reply_text(chunk, disable_web_page_preview=True)
+                    await asyncio.sleep(2.5)
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 2)
 
-        chunk += mention
+                chunk = ""
 
-    if chunk and TAG_RUNNING.get(chat_id):
-        await message.reply_text(chunk, disable_web_page_preview=True)
+            chunk += mention
 
-    TAG_RUNNING.pop(chat_id, None)
+        if chunk and TAG_RUNNING.get(chat_id):
+            try:
+                await message.reply_text(chunk, disable_web_page_preview=True)
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 2)
+
+    finally:
+        TAG_RUNNING.pop(chat_id, None)
 
 
 @app.on_message(filters.command("endtag") & filters.group)
@@ -95,9 +105,7 @@ async def end_tag(_, message):
 # ---------------- LINK HANDLER ----------------
 @app.on_message(filters.private | filters.group)
 async def link_handler(_, msg):
-    if not msg.text:
-        return
-    if not re.search(URL_REGEX, msg.text):
+    if not msg.text or not re.search(URL_REGEX, msg.text):
         return
 
     user_id = msg.from_user.id
@@ -124,7 +132,7 @@ async def options(_, msg):
             InlineKeyboardButton("Video", callback_data=f"video|{url}")
         ]
     ])
-    await msg.reply("Choose:", reply_markup=kb)
+    await msg.reply("Choose format:", reply_markup=kb)
 
 # ---------------- AUTO VIDEO ----------------
 async def start_auto_video(msg, url):
@@ -204,8 +212,7 @@ async def worker():
                 output = "out.mp4"
                 cmd = [
                     "yt-dlp",
-                    "-f",
-                    "best[ext=mp4][height<=1080][fps<=30]/best",
+                    "-f", "best[ext=mp4][height<=1080][fps<=30]/best",
                     "--merge-output-format", "mp4",
                     "-o", output,
                     url
@@ -227,8 +234,7 @@ async def worker():
                 output = "out.mp4"
                 cmd = [
                     "yt-dlp",
-                    "-f",
-                    f"best[ext=mp4][height<={res}][fps<=30]/best",
+                    "-f", f"best[ext=mp4][height<={res}][fps<=30]/best",
                     "--merge-output-format", "mp4",
                     "-o", output,
                     url
