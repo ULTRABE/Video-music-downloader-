@@ -37,14 +37,56 @@ active_users = set()
 active_processes = {}
 task_counter = 0
 
+# tagall state (per chat)
+TAG_RUNNING = {}
+
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     await msg.reply(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
         "• Paste link → auto video (GC & PVT)\n"
-        "• Private only: /options <link> for audio/video choices"
+        "• Private only: /options <link> for audio/video choices\n"
+        "• /tagall → tag everyone\n"
+        "• /endtag → stop tagging"
     )
+
+# ---------------- TAG ALL ----------------
+@app.on_message(filters.command("tagall") & filters.group)
+async def tag_all(client, message):
+    chat_id = message.chat.id
+
+    if TAG_RUNNING.get(chat_id):
+        return
+
+    TAG_RUNNING[chat_id] = True
+    mentions = []
+
+    async for member in client.get_chat_members(chat_id):
+        if not TAG_RUNNING.get(chat_id):
+            break
+
+        user = member.user
+        if user.is_bot or not user.first_name:
+            continue
+
+        mentions.append(
+            f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+        )
+
+    if mentions and TAG_RUNNING.get(chat_id):
+        await message.reply_text(
+            "\n".join(mentions),
+            disable_web_page_preview=True
+        )
+
+    TAG_RUNNING.pop(chat_id, None)
+
+
+@app.on_message(filters.command("endtag") & filters.group)
+async def end_tag(_, message):
+    TAG_RUNNING.pop(message.chat.id, None)
+    await message.reply_text("Tagging stopped.")
 
 # ---------------- LINK HANDLER ----------------
 @app.on_message(filters.private | filters.group)
@@ -61,7 +103,6 @@ async def link_handler(_, msg):
             await msg.reply("⚠️ You already have an active download.")
         return
 
-    # 🔥 AUTO VIDEO EVERYWHERE
     await start_auto_video(msg, msg.text)
 
 # ---------------- OPTIONS (PRIVATE ONLY) ----------------
@@ -91,12 +132,11 @@ async def start_auto_video(msg, url):
     task_id = str(task_counter)
 
     status = await msg.reply("⬇️ Downloading video…")
-
     await download_queue.put(
         (task_id, status, "auto_video", url, user_id)
     )
 
-# ---------------- CALLBACKS (PRIVATE ONLY) ----------------
+# ---------------- CALLBACKS ----------------
 @app.on_callback_query()
 async def callbacks(_, cq):
     global task_counter
@@ -158,7 +198,6 @@ async def worker():
                 or re.search(FB_REEL_REGEX, url)
             )
 
-            # -------- AUTO VIDEO (GC + PVT) --------
             if mode == "auto_video":
                 output = "out.mp4"
                 if is_reel:
@@ -172,13 +211,12 @@ async def worker():
                 else:
                     cmd = [
                         "yt-dlp",
-                        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+                        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
                         "--merge-output-format", "mp4",
                         "-o", output,
                         url
                     ]
 
-            # -------- AUDIO (PRIVATE ONLY) --------
             elif mode.startswith("a"):
                 output = "out.mp3"
                 cmd = [
@@ -190,9 +228,8 @@ async def worker():
                     url
                 ]
 
-            # -------- VIDEO (PRIVATE ONLY) --------
             else:
-                res = {"v480":"480","v720":"720","v1080":"1080"}[mode]
+                res = {"v480": "480", "v720": "720", "v1080": "1080"}[mode]
                 output = "out.mp4"
                 if is_reel:
                     cmd = [
