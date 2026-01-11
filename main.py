@@ -62,7 +62,7 @@ async def tag_all(client, message):
     TAG_RUNNING[chat_id] = True
 
     chunk = ""
-    MAX_LEN = 3800  # telegram safe
+    MAX_LEN = 540  # telegram safe
 
     async for member in client.get_chat_members(chat_id):
         if not TAG_RUNNING.get(chat_id):
