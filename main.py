@@ -46,12 +46,12 @@ async def start(_, msg):
     await msg.reply(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
         "• Paste link → auto video (GC & PVT)\n"
-        "• Private only: /options <link> for audio/video choices\n"
-        "• /tagall → tag everyone\n"
+        "• Private only: /options <link>\n"
+        "• /tagall → tag all\n"
         "• /endtag → stop tagging"
     )
 
-# ---------------- TAG ALL ----------------
+# ---------------- TAG ALL (FIXED) ----------------
 @app.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client, message):
     chat_id = message.chat.id
@@ -60,7 +60,9 @@ async def tag_all(client, message):
         return
 
     TAG_RUNNING[chat_id] = True
-    mentions = []
+
+    chunk = ""
+    MAX_LEN = 3800  # telegram safe
 
     async for member in client.get_chat_members(chat_id):
         if not TAG_RUNNING.get(chat_id):
@@ -70,15 +72,17 @@ async def tag_all(client, message):
         if user.is_bot or not user.first_name:
             continue
 
-        mentions.append(
-            f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
-        )
+        mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>\n'
 
-    if mentions and TAG_RUNNING.get(chat_id):
-        await message.reply_text(
-            "\n".join(mentions),
-            disable_web_page_preview=True
-        )
+        if len(chunk) + len(mention) > MAX_LEN:
+            await message.reply_text(chunk, disable_web_page_preview=True)
+            chunk = ""
+            await asyncio.sleep(1)
+
+        chunk += mention
+
+    if chunk and TAG_RUNNING.get(chat_id):
+        await message.reply_text(chunk, disable_web_page_preview=True)
 
     TAG_RUNNING.pop(chat_id, None)
 
@@ -100,7 +104,7 @@ async def link_handler(_, msg):
 
     if user_id in active_users:
         if msg.chat.type == "private":
-            await msg.reply("⚠️ You already have an active download.")
+            await msg.reply("Already downloading.")
         return
 
     await start_auto_video(msg, msg.text)
@@ -109,18 +113,18 @@ async def link_handler(_, msg):
 @app.on_message(filters.private & filters.command("options"))
 async def options(_, msg):
     if len(msg.command) < 2:
-        await msg.reply("Usage:\n/options <video_link>")
+        await msg.reply("/options <video_link>")
         return
 
     url = msg.command[1]
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎵 Audio", callback_data=f"audio|{url}"),
-            InlineKeyboardButton("🎬 Video", callback_data=f"video|{url}")
+            InlineKeyboardButton("Audio", callback_data=f"audio|{url}"),
+            InlineKeyboardButton("Video", callback_data=f"video|{url}")
         ]
     ])
-    await msg.reply("Choose format:", reply_markup=kb)
+    await msg.reply("Choose:", reply_markup=kb)
 
 # ---------------- AUTO VIDEO ----------------
 async def start_auto_video(msg, url):
@@ -131,7 +135,7 @@ async def start_auto_video(msg, url):
     task_counter += 1
     task_id = str(task_counter)
 
-    status = await msg.reply("⬇️ Downloading video…")
+    status = await msg.reply("Downloading…")
     await download_queue.put(
         (task_id, status, "auto_video", url, user_id)
     )
@@ -146,12 +150,12 @@ async def callbacks(_, cq):
 
     if data[0] == "audio":
         await cq.message.edit(
-            "Select audio quality:",
+            "Audio quality:",
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("64 kbps", callback_data=f"a64|{url}"),
-                    InlineKeyboardButton("128 kbps", callback_data=f"a128|{url}"),
-                    InlineKeyboardButton("320 kbps", callback_data=f"a320|{url}")
+                    InlineKeyboardButton("64", callback_data=f"a64|{url}"),
+                    InlineKeyboardButton("128", callback_data=f"a128|{url}"),
+                    InlineKeyboardButton("320", callback_data=f"a320|{url}")
                 ]
             ])
         )
@@ -159,13 +163,11 @@ async def callbacks(_, cq):
 
     if data[0] == "video":
         await cq.message.edit(
-            "Select video quality:",
+            "Video quality:",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("480p", callback_data=f"v480|{url}"),
-                    InlineKeyboardButton("720p", callback_data=f"v720|{url}")
-                ],
-                [
+                    InlineKeyboardButton("720p", callback_data=f"v720|{url}"),
                     InlineKeyboardButton("1080p", callback_data=f"v1080|{url}")
                 ]
             ])
@@ -200,22 +202,14 @@ async def worker():
 
             if mode == "auto_video":
                 output = "out.mp4"
-                if is_reel:
-                    cmd = [
-                        "yt-dlp",
-                        "-f", "best[ext=mp4][height<=1080][fps<=30]/best",
-                        "--merge-output-format", "mp4",
-                        "-o", output,
-                        url
-                    ]
-                else:
-                    cmd = [
-                        "yt-dlp",
-                        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-                        "--merge-output-format", "mp4",
-                        "-o", output,
-                        url
-                    ]
+                cmd = [
+                    "yt-dlp",
+                    "-f",
+                    "best[ext=mp4][height<=1080][fps<=30]/best",
+                    "--merge-output-format", "mp4",
+                    "-o", output,
+                    url
+                ]
 
             elif mode.startswith("a"):
                 output = "out.mp3"
@@ -231,22 +225,14 @@ async def worker():
             else:
                 res = {"v480": "480", "v720": "720", "v1080": "1080"}[mode]
                 output = "out.mp4"
-                if is_reel:
-                    cmd = [
-                        "yt-dlp",
-                        "-f", f"best[ext=mp4][height<={res}][fps<=30]/best",
-                        "--merge-output-format", "mp4",
-                        "-o", output,
-                        url
-                    ]
-                else:
-                    cmd = [
-                        "yt-dlp",
-                        "-f", f"bestvideo[ext=mp4][height<={res}]+bestaudio[ext=m4a]",
-                        "--merge-output-format", "mp4",
-                        "-o", output,
-                        url
-                    ]
+                cmd = [
+                    "yt-dlp",
+                    "-f",
+                    f"best[ext=mp4][height<={res}][fps<=30]/best",
+                    "--merge-output-format", "mp4",
+                    "-o", output,
+                    url
+                ]
 
             proc = await asyncio.create_subprocess_exec(*cmd)
             active_processes[task_id] = proc
