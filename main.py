@@ -63,7 +63,7 @@ async def tag_all(client, message):
 
     TAG_RUNNING[chat_id] = True
     chunk = ""
-    MAX_LEN = 3500
+    MAX_LEN = 840
 
     try:
         async for member in client.get_chat_members(chat_id):
