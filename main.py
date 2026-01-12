@@ -80,12 +80,12 @@ async def clean_deleted_accounts(client, message):
 
     await message.reply_text(f"Cleanup done. Removed: {removed}")
 
-# ---------------- LINK HANDLER ----------------
+# ---------------- LINK HANDLER (FIXED) ----------------
 @app.on_message(
     (filters.group | filters.private)
     & filters.text
-    & ~filters.command
     & filters.regex(r"https?://")
+    & ~filters.regex(r"^/")
 )
 async def link_handler(_, msg):
     uid = msg.from_user.id
@@ -99,6 +99,7 @@ async def link_handler(_, msg):
 
     active_users.add(uid)
     await download_queue.put((msg.chat.id, msg.text.strip(), uid))
+
 # ---------------- DOWNLOAD WORKER ----------------
 async def worker():
     while True:
@@ -211,129 +212,6 @@ async def end_tag(_, msg):
     TAG_RUNNING.pop(msg.chat.id, None)
     await msg.reply_text("Tagging stopped.")
 
-# ---------------- PURGE / DELETE ----------------
-@app.on_message(filters.command("purge") & filters.group & filters.reply)
-async def purge(client, msg):
-    for i in range(msg.reply_to_message.id, msg.id):
-        try:
-            await client.delete_messages(msg.chat.id, i)
-        except Exception:
-            pass
-    await msg.delete()
-
-@app.on_message(filters.command("del") & filters.group & filters.reply)
-async def delete(_, msg):
-    await msg.reply_to_message.delete()
-    await msg.delete()
-
-# ---------------- LOCK / UNLOCK ----------------
-@app.on_message(filters.command("lock") & filters.group)
-async def lock(client, msg):
-    await client.set_chat_permissions(msg.chat.id, ChatPermissions())
-    await msg.reply_text("Chat locked.")
-
-@app.on_message(filters.command("unlock") & filters.group)
-async def unlock(client, msg):
-    await client.set_chat_permissions(
-        msg.chat.id,
-        ChatPermissions(
-            can_send_messages=True,
-            can_send_media_messages=True,
-            can_send_other_messages=True,
-            can_add_web_page_previews=True
-        )
-    )
-    await msg.reply_text("Chat unlocked.")
-
-# ---------------- SLOWMODE ----------------
-@app.on_message(filters.command("slowmode") & filters.group)
-async def slowmode(client, msg):
-    if len(msg.command) < 2:
-        return await msg.reply_text("Usage: /slowmode <seconds|off>")
-    arg = msg.command[1].lower()
-    if arg == "off":
-        seconds = 0
-    elif arg.isdigit():
-        seconds = int(arg)
-    else:
-        return await msg.reply_text("Invalid value.")
-    await client.set_slow_mode_delay(msg.chat.id, seconds)
-    await msg.reply_text(f"Slow mode set to {seconds}s")
-
-# ---------------- INFO ----------------
-@app.on_message(filters.command("info"))
-async def info(_, msg):
-    if len(msg.command) < 2:
-        return await msg.reply_text("Usage: /info <link>")
-    result = subprocess.run(
-        ["yt-dlp", "--dump-json", msg.command[1]],
-        capture_output=True, text=True
-    )
-    data = json.loads(result.stdout)
-    await msg.reply_text(
-        f"Title: {data.get('title')}\n"
-        f"Duration: {data.get('duration')}s\n"
-        f"Uploader: {data.get('uploader')}"
-    )
-
-# ---------------- STATS ----------------
-@app.on_message(filters.command("stats") & filters.group)
-async def stats(client, message):
-    total = await client.get_chat_members_count(message.chat.id)
-    deleted = 0
-    async for m in client.get_chat_members(message.chat.id):
-        if m.user and m.user.is_deleted:
-            deleted += 1
-    await message.reply_text(f"Members: {total}\nDeleted: {deleted}")
-
-# ---------------- ADMIN LIST ----------------
-@app.on_message(filters.command("admins") & filters.group)
-async def admins(client, msg):
-    names = []
-    async for m in client.get_chat_members(msg.chat.id, filter=ChatMembersFilter.ADMINISTRATORS):
-        if m.user:
-            names.append(m.user.first_name)
-    await msg.reply_text("Admins:\n" + "\n".join(names))
-
-# ---------------- MISC ----------------
-@app.on_message(filters.command("ping"))
-async def ping(_, msg):
-    t = time.time()
-    m = await msg.reply_text("Pinging…")
-    await m.edit_text(f"Pong `{int((time.time()-t)*1000)}ms`")
-
-@app.on_message(filters.command("id"))
-async def ids(_, msg):
-    txt = f"Chat ID: `{msg.chat.id}`\nYour ID: `{msg.from_user.id}`"
-    if msg.reply_to_message:
-        txt += f"\nUser ID: `{msg.reply_to_message.from_user.id}`"
-    await msg.reply_text(txt)
-
-@app.on_message(filters.command("mentionme"))
-async def mention_me(_, msg):
-    u = msg.from_user
-    await msg.reply_text(
-        f'<a href="tg://user?id={u.id}">{u.first_name}</a>',
-        parse_mode="html"
-    )
-
-@app.on_message(filters.command("flip"))
-async def flip(_, msg):
-    await msg.reply_text("Heads" if random.choice([1, 0]) else "Tails")
-
-@app.on_message(filters.command("roll"))
-async def roll(_, msg):
-    low, high = (1, 100)
-    if len(msg.command) == 3:
-        low, high = map(int, msg.command[1:])
-    await msg.reply_text(str(random.randint(low, high)))
-
-@app.on_message(filters.command("8ball"))
-async def eightball(_, msg):
-    await msg.reply_text(random.choice(
-        ["Yes", "No", "Maybe", "Definitely", "Ask again later"]
-    ))
-
 # ---------------- INLINE HELP ----------------
 HELP_TEXT = {
     "main": "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\nSelect a category below.",
@@ -354,18 +232,12 @@ def help_kb():
 
 @app.on_message(filters.command("help") & filters.group)
 async def help_cmd(_, msg):
-    await msg.reply_text(
-        HELP_TEXT["main"],
-        reply_markup=help_kb()
-    )
+    await msg.reply_text(HELP_TEXT["main"], reply_markup=help_kb())
 
 @app.on_callback_query(filters.regex("^help_"))
 async def help_cb(_, q):
     key = q.data.replace("help_", "")
-    await q.message.edit_text(
-        HELP_TEXT.get(key, HELP_TEXT["main"]),
-        reply_markup=help_kb()
-    )
+    await q.message.edit_text(HELP_TEXT.get(key, HELP_TEXT["main"]), reply_markup=help_kb())
     await q.answer()
 
 # ---------------- MAIN ----------------
