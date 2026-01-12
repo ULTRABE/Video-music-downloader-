@@ -198,6 +198,239 @@ async def demote(client, msg):
         can_restrict_members=False,
         can_promote_members=False
     )
+# ---------------- TAG ALL ----------------
+TAG_RUNNING = {}
+
+@app.on_message(filters.command("tagall") & filters.group)
+async def tag_all(client, message):
+    chat_id = message.chat.id
+
+    if TAG_RUNNING.get(chat_id):
+        return
+
+    TAG_RUNNING[chat_id] = True
+    text_chunk = ""
+    MAX_LEN = 350  # safe size
+
+    try:
+        async for member in client.get_chat_members(chat_id):
+            if not TAG_RUNNING.get(chat_id):
+                break
+
+            user = member.user
+            if not user or user.is_bot or not user.first_name:
+                continue
+
+            mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>\n'
+
+            if len(text_chunk) + len(mention) > MAX_LEN:
+                await message.reply_text(text_chunk, disable_web_page_preview=True)
+                await asyncio.sleep(2)
+                text_chunk = ""
+
+            text_chunk += mention
+
+        if text_chunk and TAG_RUNNING.get(chat_id):
+            await message.reply_text(text_chunk, disable_web_page_preview=True)
+
+    finally:
+        TAG_RUNNING.pop(chat_id, None)
+
+
+@app.on_message(filters.command("endtag") & filters.group)
+async def end_tag(_, message):
+    TAG_RUNNING.pop(message.chat.id, None)
+    await message.reply_text("Tagging stopped.")
+
+@app.on_message(filters.command("purge") & filters.group & filters.reply)
+async def purge_messages(client, message):
+    chat_id = message.chat.id
+    from_id = message.reply_to_message.id
+    to_id = message.id
+
+    try:
+        for msg_id in range(from_id, to_id):
+            try:
+                await client.delete_messages(chat_id, msg_id)
+            except Exception:
+                pass
+        await message.delete()
+    except Exception:
+        pass
+
+
+
+@app.on_message(filters.command("del") & filters.group & filters.reply)
+async def delete_message(_, message):
+    try:
+        await message.reply_to_message.delete()
+        await message.delete()
+    except Exception:
+        pass
+
+
+from pyrogram.types import ChatPermissions
+
+@app.on_message(filters.command("lock") & filters.group)
+async def lock_chat(client, message):
+    await client.set_chat_permissions(
+        message.chat.id,
+        ChatPermissions()
+    )
+    await message.reply_text("Chat locked.")
+
+
+
+
+@app.on_message(filters.command("unlock") & filters.group)
+async def unlock_chat(client, message):
+    await client.set_chat_permissions(
+        message.chat.id,
+        ChatPermissions(
+            can_send_messages=True,
+            can_send_media_messages=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True
+        )
+    )
+    await message.reply_text("Chat unlocked.")
+
+
+
+
+
+
+
+@app.on_message(filters.command("slowmode") & filters.group)
+async def slowmode(client, message):
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /slowmode <seconds|off>")
+        return
+
+    arg = message.command[1]
+    seconds = 0 if arg == "off" else int(arg)
+
+    await client.set_slow_mode_delay(
+        message.chat.id,
+        seconds
+    )
+    await message.reply_text(f"Slow mode set to {seconds}s")
+
+
+
+
+
+
+
+
+
+@app.on_message(filters.command("id"))
+async def get_ids(_, message):
+    text = f"Chat ID: `{message.chat.id}`\nYour ID: `{message.from_user.id}`"
+    if message.reply_to_message:
+        text += f"\nReplied User ID: `{message.reply_to_message.from_user.id}`"
+    await message.reply_text(text)
+
+
+
+
+@app.on_message(filters.command("admins") & filters.group)
+async def list_admins(client, message):
+    admins = []
+    async for member in client.get_chat_members(message.chat.id, filter="administrators"):
+        admins.append(member.user.first_name)
+
+    await message.reply_text("Admins:\n" + "\n".join(admins))
+
+
+
+
+import time
+
+@app.on_message(filters.command("ping"))
+async def ping(_, message):
+    start = time.time()
+    m = await message.reply_text("Pinging...")
+    end = time.time()
+    await m.edit_text(f"Pong! `{int((end-start)*1000)}ms`")
+
+
+
+
+
+
+
+@app.on_message(filters.command("stats") & filters.group)
+async def stats(client, message):
+    members = await client.get_chat_members_count(message.chat.id)
+    deleted = 0
+
+    async for m in client.get_chat_members(message.chat.id):
+        if m.user and m.user.is_deleted:
+            deleted += 1
+
+    await message.reply_text(
+        f"Members: {members}\nDeleted accounts: {deleted}"
+    )
+
+
+
+
+
+@app.on_message(filters.command("mentionme"))
+async def mention_me(_, message):
+    user = message.from_user
+    await message.reply_text(f'<a href="tg://user?id={user.id}">{user.first_name}</a>', parse_mode="html")
+
+
+
+
+
+import random
+
+@app.on_message(filters.command("roll"))
+async def roll(_, message):
+    args = message.command
+    if len(args) == 3:
+        low, high = int(args[1]), int(args[2])
+    else:
+        low, high = 1, 100
+    await message.reply_text(f"🎲 {random.randint(low, high)}")
+
+
+import json
+import subprocess
+
+@app.on_message(filters.command("info"))
+async def video_info(_, message):
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /info <link>")
+        return
+
+    url = message.command[1]
+    result = subprocess.run(
+        ["yt-dlp", "--dump-json", url],
+        capture_output=True, text=True
+    )
+
+    data = json.loads(result.stdout)
+    await message.reply_text(
+        f"Title: {data.get('title')}\n"
+        f"Duration: {data.get('duration')}s\n"
+        f"Uploader: {data.get('uploader')}"
+    )
+
+@app.on_message(filters.command("flip"))
+async def flip(_, message):
+    await message.reply_text("Heads" if random.choice([True, False]) else "Tails")
+
+answers = [
+    "Yes", "No", "Maybe", "Definitely", "Ask again later"
+]
+
+@app.on_message(filters.command("8ball"))
+async def eight_ball(_, message):
+    await message.reply_text(random.choice(answers))
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
