@@ -41,7 +41,7 @@ async def start(_, msg):
         "• /demote"
     )
 
-# ---------------- CLEAN DELETED ----------------
+# ---------------- CLEAN DELETED (FIXED) ----------------
 @app.on_message(filters.command("clean") & filters.group)
 async def clean_deleted(client, message):
     chat_id = message.chat.id
@@ -49,26 +49,32 @@ async def clean_deleted(client, message):
     try:
         me = await client.get_chat_member(chat_id, "me")
         if not me.privileges or not me.privileges.can_restrict_members:
+            await message.reply_text("Bot needs ban permissions.")
             return
     except ChatAdminRequired:
+        await message.reply_text("Make bot admin first.")
         return
+
+    removed = 0
 
     async for member in client.get_chat_members(chat_id):
         user = member.user
+
+        # STRICT SAFETY: only deleted accounts
         if user and user.is_deleted:
             try:
-                name = user.first_name or "User"
-                await client.send_message(
-                    chat_id,
-                    f"{name} deleted their account — removed."
-                )
                 await client.ban_chat_member(chat_id, user.id)
                 await client.unban_chat_member(chat_id, user.id)
+                removed += 1
                 await asyncio.sleep(3)
             except FloodWait as e:
                 await asyncio.sleep(e.value)
             except Exception:
                 continue
+
+    await message.reply_text(
+        f"Cleanup complete. Removed {removed} deleted accounts."
+    )
 
 # ---------------- LINK HANDLER ----------------
 @app.on_message(filters.group | filters.private)
