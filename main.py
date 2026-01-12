@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, ChatAdminRequired
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +39,6 @@ active_users = set()
 active_processes = {}
 task_counter = 0
 
-# tagall per-chat state
 TAG_RUNNING = {}
 
 # ---------------- START ----------------
@@ -50,14 +49,48 @@ async def start(_, msg):
         "• Paste link → auto video (GC & PVT)\n"
         "• Private: /options <link>\n"
         "• /tagall → tag members\n"
-        "• /endtag → stop tagging"
+        "• /endtag → stop tagging\n"
+        "• /clean → remove deleted accounts"
     )
 
-# ---------------- TAG ALL (FLOOD SAFE) ----------------
+# ---------------- CLEAN DELETED ACCOUNTS ----------------
+@app.on_message(filters.command("clean") & filters.group)
+async def clean_deleted(client, message):
+    chat_id = message.chat.id
+
+    try:
+        bot = await client.get_chat_member(chat_id, "me")
+        if not bot.privileges or not bot.privileges.can_restrict_members:
+            await message.reply_text("Bot needs ban permission.")
+            return
+    except ChatAdminRequired:
+        await message.reply_text("Make bot admin first.")
+        return
+
+    removed = 0
+    await message.reply_text("Scanning deleted accounts…")
+
+    async for member in client.get_chat_members(chat_id):
+        user = member.user
+
+        # ABSOLUTE SAFETY CHECK
+        if user and user.is_deleted:
+            try:
+                await client.ban_chat_member(chat_id, user.id)
+                await client.unban_chat_member(chat_id, user.id)
+                removed += 1
+                await asyncio.sleep(3)
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+            except Exception:
+                continue
+
+    await message.reply_text(f"Done. Deleted accounts removed: {removed}")
+
+# ---------------- TAG ALL ----------------
 @app.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client, message):
     chat_id = message.chat.id
-
     if TAG_RUNNING.get(chat_id):
         return
 
@@ -77,25 +110,17 @@ async def tag_all(client, message):
             mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>\n'
 
             if len(chunk) + len(mention) > MAX_LEN:
-                try:
-                    await message.reply_text(chunk, disable_web_page_preview=True)
-                    await asyncio.sleep(2.5)
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 2)
-
+                await message.reply_text(chunk, disable_web_page_preview=True)
+                await asyncio.sleep(2.5)
                 chunk = ""
 
             chunk += mention
 
         if chunk and TAG_RUNNING.get(chat_id):
-            try:
-                await message.reply_text(chunk, disable_web_page_preview=True)
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 2)
+            await message.reply_text(chunk, disable_web_page_preview=True)
 
     finally:
         TAG_RUNNING.pop(chat_id, None)
-
 
 @app.on_message(filters.command("endtag") & filters.group)
 async def end_tag(_, message):
@@ -109,15 +134,12 @@ async def link_handler(_, msg):
         return
 
     user_id = msg.from_user.id
-
     if user_id in active_users:
-        if msg.chat.type == "private":
-            await msg.reply("Already downloading.")
         return
 
     await start_auto_video(msg, msg.text)
 
-# ---------------- OPTIONS (PRIVATE ONLY) ----------------
+# ---------------- OPTIONS ----------------
 @app.on_message(filters.private & filters.command("options"))
 async def options(_, msg):
     if len(msg.command) < 2:
@@ -125,7 +147,6 @@ async def options(_, msg):
         return
 
     url = msg.command[1]
-
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Audio", callback_data=f"audio|{url}"),
@@ -144,9 +165,7 @@ async def start_auto_video(msg, url):
     task_id = str(task_counter)
 
     status = await msg.reply("Downloading…")
-    await download_queue.put(
-        (task_id, status, "auto_video", url, user_id)
-    )
+    await download_queue.put((task_id, status, "auto_video", url, user_id))
 
 # ---------------- CALLBACKS ----------------
 @app.on_callback_query()
@@ -191,9 +210,7 @@ async def callbacks(_, cq):
     task_id = str(task_counter)
 
     await cq.message.edit("Queued…")
-    await download_queue.put(
-        (task_id, cq.message, data[0], url, user_id)
-    )
+    await download_queue.put((task_id, cq.message, data[0], url, user_id))
 
 # ---------------- WORKER ----------------
 async def worker():
@@ -202,12 +219,6 @@ async def worker():
         chat_id = msg_obj.chat.id
 
         try:
-            is_reel = (
-                re.search(YT_SHORTS_REGEX, url)
-                or re.search(INSTA_REEL_REGEX, url)
-                or re.search(FB_REEL_REGEX, url)
-            )
-
             if mode == "auto_video":
                 output = "out.mp4"
                 cmd = [
@@ -217,18 +228,15 @@ async def worker():
                     "-o", output,
                     url
                 ]
-
             elif mode.startswith("a"):
                 output = "out.mp3"
                 cmd = [
-                    "yt-dlp",
-                    "-x",
+                    "yt-dlp", "-x",
                     "--audio-format", "mp3",
                     "--audio-quality", mode[1:],
                     "-o", output,
                     url
                 ]
-
             else:
                 res = {"v480": "480", "v720": "720", "v1080": "1080"}[mode]
                 output = "out.mp4"
@@ -241,9 +249,7 @@ async def worker():
                 ]
 
             proc = await asyncio.create_subprocess_exec(*cmd)
-            active_processes[task_id] = proc
             await proc.wait()
-            active_processes.pop(task_id, None)
 
             if os.path.exists(output):
                 if output.endswith(".mp4"):
@@ -254,7 +260,6 @@ async def worker():
 
         except Exception as e:
             logging.exception(e)
-
         finally:
             active_users.discard(user_id)
             download_queue.task_done()
