@@ -11,7 +11,11 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, ChatAdminRequired
 from pyrogram.enums import ChatMembersFilter
-from pyrogram.types import ChatPermissions
+from pyrogram.types import (
+    ChatPermissions,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
@@ -43,16 +47,14 @@ async def start(_, msg):
     await msg.reply_text(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
         "• Send link → auto download\n"
-        "• /clean → remove deleted accounts\n"
-        "• /promote /fullpromote /superpromote\n"
-        "• /demote"
+        "• /help → commands\n"
+        "• /clean → remove deleted accounts"
     )
 
 # ---------------- CLEAN ----------------
 @app.on_message(filters.command("clean") & filters.group)
 async def clean_deleted_accounts(client, message):
     chat_id = message.chat.id
-
     try:
         me = await client.get_chat_member(chat_id, "me")
         if not me.privileges or not me.privileges.can_restrict_members:
@@ -101,7 +103,6 @@ async def worker():
     while True:
         chat_id, url, uid = await download_queue.get()
         out = "out.mp4"
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 "yt-dlp",
@@ -111,11 +112,9 @@ async def worker():
                 url
             )
             await proc.wait()
-
             if os.path.exists(out):
                 await app.send_video(chat_id, out, supports_streaming=True)
                 os.remove(out)
-
         except Exception as e:
             logging.exception(e)
         finally:
@@ -190,7 +189,6 @@ async def tag_all(client, message):
     async for m in client.get_chat_members(cid):
         if not TAG_RUNNING.get(cid):
             break
-
         u = m.user
         if not u or u.is_bot or not u.first_name:
             continue
@@ -200,7 +198,6 @@ async def tag_all(client, message):
             await message.reply_text(chunk, parse_mode="html")
             await asyncio.sleep(2)
             chunk = ""
-
         chunk += mention
 
     if chunk and TAG_RUNNING.get(cid):
@@ -252,29 +249,41 @@ async def unlock(client, msg):
 async def slowmode(client, msg):
     if len(msg.command) < 2:
         return await msg.reply_text("Usage: /slowmode <seconds|off>")
-
-    arg = msg.command[1]
-    seconds = 0 if arg == "off" else max(0, int(arg))
+    arg = msg.command[1].lower()
+    if arg == "off":
+        seconds = 0
+    elif arg.isdigit():
+        seconds = int(arg)
+    else:
+        return await msg.reply_text("Invalid value.")
     await client.set_slow_mode_delay(msg.chat.id, seconds)
-    await msg.reply_text(f"Slow mode: {seconds}s")
+    await msg.reply_text(f"Slow mode set to {seconds}s")
 
 # ---------------- INFO ----------------
 @app.on_message(filters.command("info"))
 async def info(_, msg):
     if len(msg.command) < 2:
         return await msg.reply_text("Usage: /info <link>")
-
     result = subprocess.run(
         ["yt-dlp", "--dump-json", msg.command[1]],
         capture_output=True, text=True
     )
-
     data = json.loads(result.stdout)
     await msg.reply_text(
         f"Title: {data.get('title')}\n"
         f"Duration: {data.get('duration')}s\n"
         f"Uploader: {data.get('uploader')}"
     )
+
+# ---------------- STATS ----------------
+@app.on_message(filters.command("stats") & filters.group)
+async def stats(client, message):
+    total = await client.get_chat_members_count(message.chat.id)
+    deleted = 0
+    async for m in client.get_chat_members(message.chat.id):
+        if m.user and m.user.is_deleted:
+            deleted += 1
+    await message.reply_text(f"Members: {total}\nDeleted: {deleted}")
 
 # ---------------- ADMIN LIST ----------------
 @app.on_message(filters.command("admins") & filters.group)
@@ -299,6 +308,14 @@ async def ids(_, msg):
         txt += f"\nUser ID: `{msg.reply_to_message.from_user.id}`"
     await msg.reply_text(txt)
 
+@app.on_message(filters.command("mentionme"))
+async def mention_me(_, msg):
+    u = msg.from_user
+    await msg.reply_text(
+        f'<a href="tg://user?id={u.id}">{u.first_name}</a>',
+        parse_mode="html"
+    )
+
 @app.on_message(filters.command("flip"))
 async def flip(_, msg):
     await msg.reply_text("Heads" if random.choice([1, 0]) else "Tails")
@@ -312,39 +329,44 @@ async def roll(_, msg):
 
 @app.on_message(filters.command("8ball"))
 async def eightball(_, msg):
-    await msg.reply_text(random.choice(["Yes", "No", "Maybe", "Definitely", "Ask again later"]))
+    await msg.reply_text(random.choice(
+        ["Yes", "No", "Maybe", "Definitely", "Ask again later"]
+    ))
+
+# ---------------- INLINE HELP ----------------
+HELP_TEXT = {
+    "main": "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\nSelect a category below.",
+    "moderation": "/clean\n/purge\n/del\n/lock\n/unlock\n/slowmode",
+    "admin": "/promote\n/fullpromote\n/superpromote\n/demote\n/admins",
+    "utils": "/tagall\n/endtag\n/stats\n/id\n/ping\n/mentionme",
+    "fun": "/roll\n/flip\n/8ball"
+}
+
+def help_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛡 Moderation", callback_data="help_moderation"),
+         InlineKeyboardButton("👮 Admin", callback_data="help_admin")],
+        [InlineKeyboardButton("🧰 Utilities", callback_data="help_utils"),
+         InlineKeyboardButton("🎲 Fun", callback_data="help_fun")],
+        [InlineKeyboardButton("⬅ Back", callback_data="help_main")]
+    ])
+
 @app.on_message(filters.command("help") & filters.group)
-async def help_cmd(_, message):
-    await message.reply_text(
-        "**⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐ | Group Commands**\n\n"
-        "**Moderation**\n"
-        "/clean – Remove deleted accounts\n"
-        "/purge – Delete messages in bulk (reply)\n"
-        "/del – Delete a message (reply)\n"
-        "/lock – Lock chat\n"
-        "/unlock – Unlock chat\n"
-        "/slowmode <sec|off> – Set slow mode\n\n"
-        "**Admin Management**\n"
-        "/promote – Basic admin (reply)\n"
-        "/fullpromote – Full admin (reply)\n"
-        "/superpromote – Full + title (reply)\n"
-        "/demote – Remove admin (reply)\n"
-        "/admins – List admins\n\n"
-        "**Utilities**\n"
-        "/tagall – Mention all members\n"
-        "/endtag – Stop tagging\n"
-        "/stats – Group stats\n"
-        "/id – Get IDs\n"
-        "/ping – Bot latency\n"
-        "/mentionme – Mention yourself\n\n"
-        "**Fun**\n"
-        "/roll [min max]\n"
-        "/flip\n"
-        "/8ball\n\n"
-        "_Some commands require admin rights._",
-        disable_web_page_preview=True
+async def help_cmd(_, msg):
+    await msg.reply_text(
+        HELP_TEXT["main"],
+        reply_markup=help_kb()
     )
-    
+
+@app.on_callback_query(filters.regex("^help_"))
+async def help_cb(_, q):
+    key = q.data.replace("help_", "")
+    await q.message.edit_text(
+        HELP_TEXT.get(key, HELP_TEXT["main"]),
+        reply_markup=help_kb()
+    )
+    await q.answer()
+
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     app.start()
