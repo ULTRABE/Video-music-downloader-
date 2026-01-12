@@ -81,11 +81,13 @@ async def clean_deleted_accounts(client, message):
     await message.reply_text(f"Cleanup done. Removed: {removed}")
 
 # ---------------- LINK HANDLER ----------------
-@app.on_message((filters.group | filters.private) & filters.text)
+@app.on_message(
+    (filters.group | filters.private)
+    & filters.text
+    & ~filters.command
+    & filters.regex(r"https?://")
+)
 async def link_handler(_, msg):
-    if not re.search(r"https?://", msg.text):
-        return
-
     uid = msg.from_user.id
     if uid in active_users:
         return
@@ -97,7 +99,6 @@ async def link_handler(_, msg):
 
     active_users.add(uid)
     await download_queue.put((msg.chat.id, msg.text.strip(), uid))
-
 # ---------------- DOWNLOAD WORKER ----------------
 async def worker():
     while True:
