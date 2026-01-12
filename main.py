@@ -35,45 +35,53 @@ active_users = set()
 async def start(_, msg):
     await msg.reply(
         "⏤͟͞ 𝗡𝗔𝗚𝗘𝗦𝗛𝗪𝗔𝗥 ㍐\n\n"
-        "• Paste link → auto download\n"
+        "• Send link → auto download\n"
         "• /clean → remove deleted accounts\n"
         "• /promote /fullpromote /superpromote\n"
         "• /demote"
     )
 
-# ---------------- CLEAN DELETED (FIXED) ----------------
+# ---------------- CLEAN (ORIGINAL LOGIC) ----------------
 @app.on_message(filters.command("clean") & filters.group)
-async def clean_deleted(client, message):
+async def clean_deleted_accounts(client, message):
     chat_id = message.chat.id
 
     try:
-        me = await client.get_chat_member(chat_id, "me")
-        if not me.privileges or not me.privileges.can_restrict_members:
-            await message.reply_text("Bot needs ban permissions.")
+        bot_member = await client.get_chat_member(chat_id, "me")
+        if not bot_member.privileges or not bot_member.privileges.can_restrict_members:
+            await message.reply_text("Bot needs ban permission.")
             return
     except ChatAdminRequired:
-        await message.reply_text("Make bot admin first.")
+        await message.reply_text("Make the bot admin first.")
         return
 
     removed = 0
+    await message.reply_text("Scanning for deleted accounts…")
 
     async for member in client.get_chat_members(chat_id):
         user = member.user
 
-        # STRICT SAFETY: only deleted accounts
+        # 🔒 SAFETY: ONLY deleted accounts
         if user and user.is_deleted:
             try:
+                await client.send_message(
+                    chat_id,
+                    "User deleted their account — removed."
+                )
+
                 await client.ban_chat_member(chat_id, user.id)
                 await client.unban_chat_member(chat_id, user.id)
+
                 removed += 1
                 await asyncio.sleep(3)
+
             except FloodWait as e:
                 await asyncio.sleep(e.value)
             except Exception:
                 continue
 
     await message.reply_text(
-        f"Cleanup complete. Removed {removed} deleted accounts."
+        f"Cleanup done. Deleted accounts removed: {removed}"
     )
 
 # ---------------- LINK HANDLER ----------------
@@ -96,7 +104,7 @@ async def link_handler(_, msg):
     active_users.add(user_id)
     await download_queue.put((msg.chat.id, url, user_id))
 
-# ---------------- WORKER ----------------
+# ---------------- DOWNLOAD WORKER ----------------
 async def worker():
     while True:
         chat_id, url, user_id = await download_queue.get()
