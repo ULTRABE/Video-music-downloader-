@@ -1,28 +1,21 @@
 import os
-import tempfile
 from pathlib import Path
+import tempfile
 
-# ── ENV ─────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing")
+    raise RuntimeError("❌ BOT_TOKEN environment variable is required")
 
 if not REDIS_URL:
-    raise RuntimeError("REDIS_URL is missing")
+    raise RuntimeError("❌ REDIS_URL environment variable is required")
 
-# ── OWNER / ADMIN ───────────────────────────────────
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))  # set in env
-
-# ── TEMP STORAGE ────────────────────────────────────
+# Create temp dir
 TEMP_DIR = Path(tempfile.mkdtemp(prefix="video_dl_"))
+TEMP_DIR.mkdir(exist_ok=True)
 
-# ── SIZE LIMITS ─────────────────────────────────────
-MAX_VIDEO_MB = 45  # Telegram video limit
-
-# ── ADULT CONTENT TTL (PRIVATE ONLY) ─────────────────
-ADULT_TTL = 60  # seconds (1 minute auto-delete)
-
-# ── CONCURRENCY ─────────────────────────────────────
-GLOBAL_DOWNLOADS = 2
+MAX_VIDEO_MB = 45
+ADULT_TTL = 60
+# GLOBAL_DOWNLOADS removed (unused dead code)
