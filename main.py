@@ -318,11 +318,12 @@ async def main():
     logger.info("BOT READY")
 
     await app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_path=f"/{WEBHOOK_SECRET}",
-        webhook_secret=WEBHOOK_SECRET,
-    )
+    listen="0.0.0.0",
+    port=port,
+    url_path=webhook_secret,
+    webhook_url=f"{webhook_url}/{webhook_secret}",
+    secret_token=webhook_secret,
+)
 
 if __name__ == "__main__":
     asyncio.run(main())
