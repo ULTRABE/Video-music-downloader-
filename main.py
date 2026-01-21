@@ -25,10 +25,8 @@ from telegram.ext import (
 
 # ───────────────── CONFIG ─────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-
-if not BOT_TOKEN or not OWNER_ID:
-    raise RuntimeError("BOT_TOKEN and OWNER_ID are required")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is required")
 
 TEMP = Path("temp")
 TEMP.mkdir(exist_ok=True)
@@ -36,31 +34,35 @@ TEMP.mkdir(exist_ok=True)
 MAX_CONCURRENT = 2
 SEM = asyncio.Semaphore(MAX_CONCURRENT)
 
-AUTHORIZED_GROUPS = set()
-VIDEO_STORE = {}  # msg_id -> file path
+VIDEO_STORE = {}  # message_id -> file path
 
 PUBLIC_DOMAINS = {
-    "youtube.com", "youtu.be",
+    "youtube.com",
     "instagram.com",
-    "facebook.com", "fb.watch",
-    "twitter.com", "x.com",
+    "facebook.com",
+    "twitter.com",
     "tiktok.com",
 }
 
 ADULT_DOMAINS = {
-    "pornhub.com", "xvideos.com",
-    "xhamster.com", "xnxx.com",
+    "pornhub.com",
+    "xvideos.com",
+    "xhamster.com",
+    "xnxx.com",
     "youporn.com",
 }
 
 ADULT_TTL = 300  # seconds
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("premium-bot")
+log = logging.getLogger("downloader")
 
 # ───────────────── HELPERS ─────────────────
-def domain(url: str) -> str:
-    return urlparse(url).netloc.replace("www.", "").lower()
+def normalize_domain(url: str) -> str:
+    netloc = urlparse(url).netloc.lower()
+    netloc = netloc.replace("www.", "").replace("m.", "")
+    parts = netloc.split(".")
+    return ".".join(parts[-2:])
 
 def is_short(url: str) -> bool:
     u = url.lower()
@@ -73,16 +75,15 @@ async def auto_delete(bot, chat_id, msg_id, delay):
     except:
         pass
 
-# ───────────────── DOWNLOADERS ─────────────────
+# ───────────────── DOWNLOAD ─────────────────
 async def download_video(url: str, short: bool, adult: bool) -> Path | None:
     ts = int(datetime.now().timestamp())
-    prefix = "adult" if adult else "pub"
-    out = TEMP / f"{prefix}_{ts}.%(ext)s"
+    out = TEMP / f"vid_{ts}.%(ext)s"
 
     if adult:
         fmt = "best"
     elif short:
-        fmt = "best[ext=mp4][filesize<8M]/best"
+        fmt = "best[ext=mp4][filesize<10M]/best"
     else:
         fmt = "bv*[height<=720][fps<=30]+ba/b"
 
@@ -99,9 +100,9 @@ async def download_video(url: str, short: bool, adult: bool) -> Path | None:
             loop = asyncio.get_event_loop()
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 await loop.run_in_executor(None, ydl.download, [url])
-            return next(TEMP.glob(f"{prefix}_{ts}.*"), None)
+            return next(TEMP.glob("vid_*.*"), None)
         except Exception as e:
-            log.error(f"Download failed: {e}")
+            log.error(f"Download error: {e}")
             return None
 
 async def extract_mp3(video_path: Path) -> Path | None:
@@ -116,7 +117,7 @@ async def extract_mp3(video_path: Path) -> Path | None:
         )
         return mp3 if mp3.exists() else None
     except Exception as e:
-        log.error(f"MP3 failed: {e}")
+        log.error(f"MP3 error: {e}")
         return None
 
 # ───────────────── HANDLERS ─────────────────
@@ -130,30 +131,27 @@ async def handle_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     url = urls[0]
-    d = domain(url)
+    d = normalize_domain(url)
     chat = msg.chat
     private = chat.type == "private"
 
     await msg.delete()
 
-    is_adult = any(x in d for x in ADULT_DOMAINS)
-    is_public = any(x in d for x in PUBLIC_DOMAINS)
+    is_adult = d in ADULT_DOMAINS
+    is_public = d in PUBLIC_DOMAINS
 
-    # Group authorization
-    if chat.type in ("group", "supergroup") and chat.id not in AUTHORIZED_GROUPS:
-        return
-
-    # Adult in group → redirect
+    # Adult in GC → redirect
     if is_adult and not private:
-        kb = [[InlineKeyboardButton("🔞 Continue in Private", url=f"https://t.me/{ctx.bot.username}")]]
+        kb = [[InlineKeyboardButton("🔞 Open Private Chat", url=f"https://t.me/{ctx.bot.username}")]]
         await ctx.bot.send_message(
             chat.id,
-            "🔒 Adult content is only allowed in private chat.",
+            "🔒 Adult content is available only in private chat.",
             reply_markup=InlineKeyboardMarkup(kb),
         )
         return
 
     if not is_public and not is_adult:
+        await ctx.bot.send_message(chat.id, "❌ Unsupported link.")
         return
 
     status = await ctx.bot.send_message(chat.id, "⏳ Processing…")
@@ -169,17 +167,19 @@ async def handle_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 chat.id,
                 f,
                 supports_streaming=True,
-                caption="✅ Ready",
+                caption="✅ Video ready",
             )
 
         VIDEO_STORE[sent.message_id] = vid
 
+        # Pin in groups
         if chat.type in ("group", "supergroup"):
             try:
                 await sent.pin()
             except:
                 pass
 
+        # Adult auto-delete
         if is_adult:
             asyncio.create_task(auto_delete(ctx.bot, chat.id, sent.message_id, ADULT_TTL))
 
@@ -208,7 +208,7 @@ async def handle_mp3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         with open(mp3, "rb") as f:
             await ctx.bot.send_audio(msg.chat.id, f)
     except:
-        await ctx.bot.send_message(msg.chat.id, "❌ MP3 failed.")
+        await ctx.bot.send_message(msg.chat.id, "❌ MP3 conversion failed.")
     finally:
         await wait.delete()
 
@@ -216,10 +216,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("ℹ️ How it works", callback_data="help")]]
     await update.message.reply_text(
         "🎬 **Premium Video Downloader**\n\n"
-        "• Paste a link\n"
-        "• Bot deletes it\n"
-        "• Lightning-fast download\n\n"
-        "_Shorts, Reels & Audio supported_",
+        "• Paste a video link\n"
+        "• Bot deletes it automatically\n"
+        "• Fast download & upload\n\n"
+        "Reply `/mp3` to any video for audio",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown",
     )
@@ -227,20 +227,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def help_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        "• Groups must be authorized\n"
+        "• Works in groups & private\n"
+        "• Shorts/Reels supported\n"
         "• Adult content → Private only\n"
-        "• Reply /mp3 to get audio"
+        "• Reply /mp3 for audio"
     )
-
-async def auth(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        return
-    try:
-        cid = int(ctx.args[0])
-        AUTHORIZED_GROUPS.add(cid)
-        await update.message.reply_text("✅ Group authorized")
-    except:
-        await update.message.reply_text("Usage: /auth <chat_id>")
 
 # ───────────────── MAIN ─────────────────
 def main():
@@ -248,7 +239,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mp3", handle_mp3))
-    app.add_handler(CommandHandler("auth", auth))
     app.add_handler(CallbackQueryHandler(help_cb, pattern="help"))
     app.add_handler(MessageHandler(filters.Regex(r"https?://"), handle_media))
 
