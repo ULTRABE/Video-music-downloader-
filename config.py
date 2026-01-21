@@ -8,7 +8,7 @@ REDIS_URL = os.getenv("REDIS_URL")  # optional, lazy-loaded
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing")
 
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))
+OWNER_ID = int(os.getenv("OWNER_ID", "7363967303"))
 
 TEMP_DIR = Path(tempfile.mkdtemp(prefix="video_dl_"))
 
