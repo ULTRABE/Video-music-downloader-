@@ -1,65 +1,59 @@
-import asyncio
 from aiogram import Router
 from aiogram.types import Message
-from aiogram.enums import ChatAction
+from aiogram.enums import ChatType
+from aiogram.utils.chat_action import ChatActionSender
+import asyncio
 
-router = Router()
+start_router = Router()
 
-# ── Localized text pack ─────────────────────────────
+# ── Localized text (extend later) ───────────────────
 TEXT = {
-    "en": (
-        "𝐕𝐢𝐝𝐞𝐨 𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝𝐞𝐫 𝐁𝐨𝐭\n\n"
-        "𝗦𝘂𝗽𝗽𝗼𝗿𝘁𝗲𝗱 𝗣𝗹𝗮𝘁𝗳𝗼𝗿𝗺𝘀\n"
-        "• YouTube (Videos & Shorts)\n"
-        "• Instagram (Posts & Reels)\n"
-        "• TikTok\n"
-        "• Twitter / X\n"
-        "• Facebook (Videos & Reels)\n\n"
-        "𝗛𝗼𝘄 𝗶𝘁 𝘄𝗼𝗿𝗸𝘀\n"
-        "• Send a supported video link\n"
-        "• Download starts automatically\n"
-        "• Live progress with cancel option\n"
-        "• Optimized for fast delivery\n\n"
-        "𝗡𝗼𝘁𝗲\n"
-        "Some videos may be unavailable due to platform restrictions."
-    ),
-    "hi": (
-        "𝐕𝐢𝐝𝐞𝐨 𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝𝐞𝐫 𝐁𝐨𝐭\n\n"
-        "𝗦𝗮𝗺𝗮𝗿𝘁𝗵𝗶𝘁 𝗣𝗹𝗮𝘁𝗳𝗼𝗿𝗺\n"
-        "• YouTube (Videos & Shorts)\n"
-        "• Instagram (Posts & Reels)\n"
-        "• TikTok\n"
-        "• Twitter / X\n"
-        "• Facebook (Videos & Reels)\n\n"
-        "𝗞𝗮𝗶𝘀𝗲 𝗸𝗮𝗮𝗺 𝗸𝗮𝗿𝘁𝗮 𝗵𝗮𝗶\n"
-        "• Video link bhejein\n"
-        "• Download apne aap start ho jaata hai\n"
-        "• Live progress aur cancel option\n\n"
-        "𝗡𝗼𝘁𝗲\n"
-        "Kuch videos platform rules ki wajah se available nahi ho sakte."
-    )
+    "en": {
+        "title": "✨ 𝐔𝐋𝐓𝐑𝐀𝐁𝐄 ✨",
+        "subtitle": "Fast • Clean • Smart Media Downloader",
+        "body": (
+            "Hey {name},\n\n"
+            "I can download videos from:\n"
+            "• YouTube (videos & shorts)\n"
+            "• Instagram (posts & reels)\n"
+            "• TikTok\n"
+            "• X / Twitter\n"
+            "• Facebook\n\n"
+            "Just send a link and chill.\n"
+            "I’ll handle the rest."
+        ),
+        "footer": (
+            "\n\n⚡ <i>Tip:</i> Large files may take a bit.\n"
+            "📌 Groups supported.\n"
+            "🔒 Private chats supported."
+        )
+    }
 }
 
-# ── Start handler ───────────────────────────────────
-@router.message()
-async def start(msg: Message):
-    if msg.text != "/start":
-        return
+def get_lang(message: Message) -> str:
+    code = (message.from_user.language_code or "en").lower()
+    return "en" if code not in TEXT else code
 
-    # Dynamic username / name
-    name = msg.from_user.first_name or "there"
 
-    # Language detection (fallback to English)
-    lang = (msg.from_user.language_code or "en")[:2]
-    text = TEXT.get(lang, TEXT["en"])
+@start_router.message(lambda m: m.text == "/start")
+async def start_handler(message: Message):
+    lang = get_lang(message)
+    data = TEXT[lang]
 
-    # Fake typing animation
-    await msg.bot.send_chat_action(
-        chat_id=msg.chat.id,
-        action=ChatAction.TYPING
+    name = message.from_user.first_name or "there"
+
+    text = (
+        f"<b>{data['title']}</b>\n"
+        f"<i>{data['subtitle']}</i>\n\n"
+        f"{data['body'].format(name=name)}"
+        f"{data['footer']}"
     )
-    await asyncio.sleep(1.2)
 
-    await msg.reply(
-        f"Hey {name},\n\n{text}"
+    # ── Fake typing effect ───────────────────────────
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        await asyncio.sleep(1.4)
+
+    await message.answer(
+        text,
+        disable_web_page_preview=True
     )
