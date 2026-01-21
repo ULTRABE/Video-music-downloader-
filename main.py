@@ -304,7 +304,7 @@ def sig_handler(*_):
     raise SystemExit
 
 # ───────────────── MAIN ─────────────────
-async def main():
+def main():
     signal.signal(signal.SIGTERM, sig_handler)
     signal.signal(signal.SIGINT, sig_handler)
 
@@ -315,9 +315,9 @@ async def main():
     app.add_handler(CallbackQueryHandler(help_cb, pattern="help"))
     app.add_handler(MessageHandler(filters.Regex(r"https?://"), handle_media))
 
-    asyncio.create_task(cleanup_known_videos())
+    asyncio.get_event_loop().create_task(cleanup_known_videos())
 
-    await app.bot.set_webhook(
+    app.bot.set_webhook(
         url=f"{PUBLIC_URL}/{WEBHOOK_SECRET}",
         secret_token=WEBHOOK_SECRET,
         drop_pending_updates=True,
@@ -325,7 +325,7 @@ async def main():
 
     logger.info("BOT READY")
 
-    await app.run_webhook(
+    app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_SECRET,
@@ -334,4 +334,4 @@ async def main():
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
