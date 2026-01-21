@@ -1,9 +1,10 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
+from utils.state import cancel
 
-callbacks_router = Router()
+router = Router()
 
-@callbacks_router.callback_query(F.data == "adult_go")
-async def adult_redirect(cb: CallbackQuery):
-    await cb.message.answer("Send the link again here to start download.")
-    await cb.answer()
+@router.callback_query(F.data.startswith("cancel:"))
+async def cancel_download(cb: CallbackQuery):
+    cancel(cb.data.split(":")[1])
+    await cb.answer("Download cancelled")
