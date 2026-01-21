@@ -317,12 +317,6 @@ def main():
 
     asyncio.get_event_loop().create_task(cleanup_known_videos())
 
-    app.bot.set_webhook(
-        url=f"{PUBLIC_URL}/{WEBHOOK_SECRET}",
-        secret_token=WEBHOOK_SECRET,
-        drop_pending_updates=True,
-    )
-
     logger.info("BOT READY")
 
     app.run_webhook(
