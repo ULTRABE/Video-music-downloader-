@@ -1,6 +1,6 @@
 import asyncio
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 from config import BOT_TOKEN
 from handlers.start import start_router
@@ -9,9 +9,12 @@ from handlers.admin import admin_router
 from handlers.callbacks import callbacks_router
 
 async def main():
-    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
-    dp = Dispatcher()
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
 
+    dp = Dispatcher()
     dp.include_router(start_router)
     dp.include_router(admin_router)
     dp.include_router(callbacks_router)
