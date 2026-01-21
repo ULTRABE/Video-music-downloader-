@@ -280,10 +280,12 @@ def main():
     app.add_handler(CallbackQueryHandler(help_cb, pattern="help"))
     app.add_handler(MessageHandler(filters.Regex(r"https?://"), handle_media))
 
-    app.job_queue.run_once(lambda *_: asyncio.create_task(cleanup_store()), 1)
+    # Background cleanup task (NO JobQueue)
+    asyncio.get_event_loop().create_task(cleanup_store())
 
     logger.info("BOT READY (polling)")
     app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
