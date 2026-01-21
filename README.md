@@ -1,8 +1,3 @@
-Below is a **clean, professional, production-grade README** you can ship with this repo.
-It is written for **GitHub + Railway + VPS users**, explains behavior clearly, and **does NOT expose sensitive adult logic in a risky way**.
-
-You can copy-paste this **as-is**.
-
 ---
 
 # 🎥 Video Downloader Telegram Bot
