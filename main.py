@@ -80,7 +80,7 @@ async def download_video(url: str) -> Optional[Path]:
     out = TEMP_DIR / f"video_{ts}.%(ext)s"
 
     fmt = (
-        "best[ext=mp4][filesize<15M]/best[ext=mp4]"
+        "best[ext=mp4][filesize<1000M]/best[ext=mp4]"
         if is_short(url)
         else "bestvideo[ext=mp4][height<=720][fps<=30]+bestaudio/best/best"
     )
