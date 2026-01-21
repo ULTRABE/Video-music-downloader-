@@ -1,4 +1,2 @@
-python-telegram-bot[webhooks]==20.7
+python-telegram-bot==20.7
 yt-dlp==2024.10.22
-aiohttp==3.9.5
-ffmpeg-python==0.2.0
