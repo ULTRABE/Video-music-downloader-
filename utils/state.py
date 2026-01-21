@@ -1,15 +1,41 @@
-import redis, os
+import os
+import redis
 
-r = redis.Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
+_redis = None
 
-def save_adult_link(user_id, url):
-    r.setex(f"adult:{user_id}", 300, url)
+def get_redis():
+    global _redis
+    if _redis:
+        return _redis
 
-def get_adult_link(user_id):
+    url = os.getenv("REDIS_URL")
+    if not url:
+        raise RuntimeError("REDIS_URL not set")
+
+    _redis = redis.Redis.from_url(
+        url,
+        decode_responses=True,
+        socket_timeout=5,
+        socket_connect_timeout=5
+    )
+    return _redis
+
+
+def save_adult_link(user_id: int, link: str):
+    r = get_redis()
+    r.setex(f"adult:{user_id}", 300, link)
+
+
+def get_adult_link(user_id: int):
+    r = get_redis()
     return r.get(f"adult:{user_id}")
 
-def set_premium_group(chat_id):
-    r.set(f"premium_gc:{chat_id}", 1)
 
-def is_premium_group(chat_id):
-    return r.exists(f"premium_gc:{chat_id}")
+def set_premium_group(chat_id: int):
+    r = get_redis()
+    r.sadd("premium_groups", chat_id)
+
+
+def is_premium_group(chat_id: int) -> bool:
+    r = get_redis()
+    return r.sismember("premium_groups", chat_id)
