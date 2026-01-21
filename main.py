@@ -1,15 +1,13 @@
-#!/usr/bin/env python3.11
+#!/usr/bin/env python3.10
 """
-Production Telegram Media Downloader Bot
-Webhook-only • Railway-safe • Long-running stable
+Telegram Media Downloader Bot
+Polling-only • Railway-safe • Stable
 """
 
 import os
 import re
 import asyncio
 import logging
-import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
@@ -32,14 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("media-bot")
 
-# ───────────────── ENV ─────────────────
+# ───────────────── ENV (ONLY THIS) ─────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-PUBLIC_URL = os.getenv("PUBLIC_URL")
-PORT = int(os.getenv("PORT", "8080"))
-
-if not BOT_TOKEN or not WEBHOOK_SECRET or not PUBLIC_URL:
-    raise RuntimeError("BOT_TOKEN, WEBHOOK_SECRET, PUBLIC_URL must be set")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN must be set")
 
 # ───────────────── CONSTANTS ─────────────────
 BASE_DIR = Path("/tmp/media_bot")
@@ -64,11 +58,10 @@ ADULT_DOMAINS = {
 
 SHORT_PATH_MARKERS = ("/shorts", "/reel", "/reels")
 
-# message_id -> (video_path, timestamp)
 KNOWN_VIDEOS: dict[int, tuple[Path, float]] = {}
-KNOWN_VIDEO_TTL = 600  # 10 minutes
+KNOWN_VIDEO_TTL = 600  # seconds
 
-# ───────────────── UTILITIES ─────────────────
+# ───────────────── UTIL ─────────────────
 def normalize_domain(url: str) -> str:
     netloc = urlparse(url).netloc.lower()
     if netloc.startswith("www."):
@@ -79,17 +72,6 @@ def normalize_domain(url: str) -> str:
 def is_short(url: str) -> bool:
     path = urlparse(url).path.lower()
     return any(p in path for p in SHORT_PATH_MARKERS) or "tiktok.com" in url
-
-async def kill_proc(proc: subprocess.Popen):
-    try:
-        if proc.poll() is None:
-            proc.terminate()
-            await asyncio.sleep(1)
-            if proc.poll() is None:
-                proc.kill()
-    except:
-        pass
-    ACTIVE_PROCS.discard(proc)
 
 async def cleanup_known_videos():
     while True:
@@ -142,7 +124,6 @@ async def download_video(url: str, out_dir: Path) -> Path | None:
         try:
             await asyncio.wait_for(proc.communicate(), timeout=90)
         except asyncio.TimeoutError:
-            await kill_proc(proc)
             return None
         finally:
             ACTIVE_PROCS.discard(proc)
@@ -166,14 +147,10 @@ async def extract_mp3(video: Path) -> Path | None:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
-    ACTIVE_PROCS.add(proc)
     try:
         await asyncio.wait_for(proc.communicate(), timeout=60)
     except asyncio.TimeoutError:
-        await kill_proc(proc)
         return None
-    finally:
-        ACTIVE_PROCS.discard(proc)
     return mp3 if mp3.exists() else None
 
 # ───────────────── HANDLERS ─────────────────
@@ -212,15 +189,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         work = BASE_DIR / f"{chat.id}_{msg.message_id}"
         video = await download_video(url, work)
         if not video:
-            raise RuntimeError("download failed")
+            raise RuntimeError
 
         caption = ""
         ttl = 0
         if is_adult:
-            caption = (
-                "🔒 This video will be deleted in 5 minutes.\n"
-                "Forward it to Saved Messages if you want to keep it."
-            )
+            caption = "🔒 This video will be deleted in 5 minutes."
             ttl = 300
 
         with open(video, "rb") as f:
@@ -242,7 +216,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ttl:
             asyncio.create_task(delayed_delete(context.bot, chat.id, sent.message_id, ttl))
 
-    except Exception:
+    except:
         fail = await context.bot.send_message(chat.id, "❌ Failed to process media.")
         asyncio.create_task(delayed_delete(context.bot, chat.id, fail.message_id, 5))
     finally:
@@ -280,8 +254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎥 Media Downloader\n\n"
         "Send a supported video link.\n"
-        "The rest is automatic.\n\n"
-        "Works in groups and private chats.",
+        "Reply /mp3 to extract audio.",
         reply_markup=InlineKeyboardMarkup(kb),
     )
 
@@ -293,21 +266,8 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Reply /mp3 to extract audio."
     )
 
-# ───────────────── SHUTDOWN ─────────────────
-async def shutdown():
-    for p in list(ACTIVE_PROCS):
-        await kill_proc(p)
-    shutil.rmtree(BASE_DIR, ignore_errors=True)
-
-def sig_handler(*_):
-    asyncio.create_task(shutdown())
-    raise SystemExit
-
 # ───────────────── MAIN ─────────────────
-def main():
-    signal.signal(signal.SIGTERM, sig_handler)
-    signal.signal(signal.SIGINT, sig_handler)
-
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -315,17 +275,10 @@ def main():
     app.add_handler(CallbackQueryHandler(help_cb, pattern="help"))
     app.add_handler(MessageHandler(filters.Regex(r"https?://"), handle_media))
 
-    asyncio.get_event_loop().create_task(cleanup_known_videos())
+    asyncio.create_task(cleanup_known_videos())
 
-    logger.info("BOT READY")
-
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=WEBHOOK_SECRET,
-        webhook_url=f"{PUBLIC_URL}/{WEBHOOK_SECRET}",
-        secret_token=WEBHOOK_SECRET,
-    )
+    logger.info("BOT READY (polling mode)")
+    await app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
