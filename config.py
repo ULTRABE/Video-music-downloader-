@@ -10,7 +10,7 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing")
 
 # ── OWNER / ADMIN ───────────────────────────────────
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))  # replace later
+OWNER_ID = int(os.getenv("OWNER_ID", "7363967303"))  # replace later
 
 # ── TEMP STORAGE ────────────────────────────────────
 TEMP_DIR = Path(tempfile.mkdtemp(prefix="video_dl_"))
