@@ -1,8 +1,15 @@
+# nixpacks.toml
 [phases.setup]
-nixPkgs = ["python310", "ffmpeg"]
+nixPkgs = ['python311', 'ffmpeg']
+
+[phases.build]
+nixPkgs = ['python311', 'ffmpeg']
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+nixPkgs = ['python311', 'ffmpeg']
 
-[phases.start]
+[staticAssets]
+# No static assets
+
+[start]
 cmd = "python main.py"
