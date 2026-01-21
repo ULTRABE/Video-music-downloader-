@@ -1,4 +1,4 @@
 aiogram==3.4.1
 redis==5.0.1
-yt-dlp==2024.11.11
+yt-dlp>=2024.3.10
 aiofiles==23.2.1
