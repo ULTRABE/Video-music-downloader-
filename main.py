@@ -35,7 +35,7 @@ logger = logging.getLogger("media-bot")
 # ───────────────── ENV ─────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-PUBLIC_URL = os.getenv("PUBLIC_URL")  # REQUIRED
+PUBLIC_URL = os.getenv("PUBLIC_URL")
 PORT = int(os.getenv("PORT", "8080"))
 
 if not BOT_TOKEN or not WEBHOOK_SECRET or not PUBLIC_URL:
@@ -103,15 +103,23 @@ async def cleanup_known_videos():
                     pass
         await asyncio.sleep(60)
 
+async def delayed_delete(bot, chat_id, message_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
 # ───────────────── DOWNLOAD ─────────────────
 async def download_video(url: str, out_dir: Path) -> Path | None:
     out_dir.mkdir(exist_ok=True)
     template = out_dir / "video.%(ext)s"
 
-    if is_short(url):
-        fmt = "best[ext=mp4][filesize<5M]/best[ext=mp4]"
-    else:
-        fmt = "bestvideo[ext=mp4][height<=720][fps<=30]+bestaudio/best[ext=m4a]/best"
+    fmt = (
+        "best[ext=mp4][filesize<5M]/best[ext=mp4]"
+        if is_short(url)
+        else "bestvideo[ext=mp4][height<=720][fps<=30]+bestaudio/best"
+    )
 
     cmd = [
         "yt-dlp",
@@ -192,7 +200,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_adult and chat.type != chat.PRIVATE:
         warn = await context.bot.send_message(chat.id, "🚫 This content isn't supported here.")
-        asyncio.create_task(context.bot.delete_message(chat.id, warn.message_id))
+        asyncio.create_task(delayed_delete(context.bot, chat.id, warn.message_id, 5))
         return
 
     if not is_public and not is_adult:
@@ -232,11 +240,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         if ttl:
-            asyncio.create_task(context.bot.delete_message(chat.id, sent.message_id))
+            asyncio.create_task(delayed_delete(context.bot, chat.id, sent.message_id, ttl))
 
     except Exception:
         fail = await context.bot.send_message(chat.id, "❌ Failed to process media.")
-        asyncio.create_task(context.bot.delete_message(chat.id, fail.message_id))
+        asyncio.create_task(delayed_delete(context.bot, chat.id, fail.message_id, 5))
     finally:
         try:
             await context.bot.delete_message(chat.id, status.message_id)
@@ -318,12 +326,12 @@ async def main():
     logger.info("BOT READY")
 
     await app.run_webhook(
-    listen="0.0.0.0",
-    port=port,
-    url_path=webhook_secret,
-    webhook_url=f"{webhook_url}/{webhook_secret}",
-    secret_token=webhook_secret,
-)
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_SECRET,
+        webhook_url=f"{PUBLIC_URL}/{WEBHOOK_SECRET}",
+        secret_token=WEBHOOK_SECRET,
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
