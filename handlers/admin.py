@@ -5,34 +5,15 @@ from utils.state import set_premium
 
 admin_router = Router()
 
-@admin_router.message()
-async def admin_commands(message: Message):
-    # Owner-only
-    if message.from_user.id != OWNER_ID:
-        return
-
-    text = message.text.strip()
-
-    # ── /chatid ─────────────────────────────
-    if text == "/chatid":
-        await message.reply(
-            f"User ID: {message.from_user.id}\n"
-            f"Chat ID: {message.chat.id}"
-        )
-        return
-
-    # ── /premium <chat_id> ──────────────────
-    if text.startswith("/premium"):
-        parts = text.split()
-
-        if len(parts) != 2:
-            await message.reply("Usage: /premium <chat_id>")
-            return
-
-        chat_id = parts[1]
-
-        set_premium(chat_id)
-        await message.reply(
-            "Premium mode enabled.\n"
-            "This group is now adult-only."
-        )
+@admin_router.message(lambda m: m.from_user.id == OWNER_ID)
+async def admin(msg: Message):
+    if msg.text == "/chatid":
+        await msg.reply(f"📱 Chat ID: <code>{msg.chat.id}</code>", parse_mode="HTML")
+    
+    elif msg.text.startswith("/premium"):
+        try:
+            _, chat_id = msg.text.split(maxsplit=1)
+            set_premium(chat_id)
+            await msg.reply(f"✅ Premium mode enabled for chat <code>{chat_id}</code>", parse_mode="HTML")
+        except ValueError:
+            await msg.reply("❌ Usage: /premium <chat_id>")
