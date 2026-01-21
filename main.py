@@ -1,4 +1,4 @@
-# main.py
+#!/usr/bin/env python3
 import os
 import re
 import asyncio
@@ -8,7 +8,12 @@ from urllib.parse import urlparse
 from datetime import datetime
 
 import yt_dlp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import ffmpeg
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,24 +23,21 @@ from telegram.ext import (
     filters,
 )
 
-# ───────────────── LOGGING ─────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-logger = logging.getLogger("premium-downloader")
-
-# ───────────────── ENV ─────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is required")
-
 # ───────────────── CONFIG ─────────────────
-TEMP_DIR = Path("temp")
-TEMP_DIR.mkdir(exist_ok=True)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+if not BOT_TOKEN or not OWNER_ID:
+    raise RuntimeError("BOT_TOKEN and OWNER_ID are required")
+
+TEMP = Path("temp")
+TEMP.mkdir(exist_ok=True)
 
 MAX_CONCURRENT = 2
-download_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+SEM = asyncio.Semaphore(MAX_CONCURRENT)
+
+AUTHORIZED_GROUPS = set()
+VIDEO_STORE = {}  # msg_id -> file path
 
 PUBLIC_DOMAINS = {
     "youtube.com", "youtu.be",
@@ -51,118 +53,74 @@ ADULT_DOMAINS = {
     "youporn.com",
 }
 
-# message_id -> local video file
-SENT_VIDEOS = {}
+ADULT_TTL = 300  # seconds
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("premium-bot")
 
 # ───────────────── HELPERS ─────────────────
-def normalize_domain(url: str) -> str:
-    netloc = urlparse(url).netloc.lower()
-    return netloc.replace("www.", "")
+def domain(url: str) -> str:
+    return urlparse(url).netloc.replace("www.", "").lower()
 
-def is_short_form(url: str) -> bool:
+def is_short(url: str) -> bool:
     u = url.lower()
-    return any(x in u for x in [
-        "/shorts",
-        "/reel",
-        "/reels",
-        "tiktok.com",
-        "instagram.com/reel",
-    ])
+    return any(x in u for x in ["/shorts", "/reel", "tiktok.com"])
 
-def premium_status(step: int) -> str:
-    steps = [
-        "⏳ Analyzing link…",
-        "⬇️ Downloading media…",
-        "⚡ Optimizing for Telegram…",
-        "📤 Uploading…",
-    ]
-    return steps[min(step, len(steps) - 1)]
+async def auto_delete(bot, chat_id, msg_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, msg_id)
+    except:
+        pass
 
 # ───────────────── DOWNLOADERS ─────────────────
-async def download_public_video(url: str, short: bool) -> Path | None:
+async def download_video(url: str, short: bool, adult: bool) -> Path | None:
     ts = int(datetime.now().timestamp())
-    out = TEMP_DIR / f"public_{ts}.%(ext)s"
+    prefix = "adult" if adult else "pub"
+    out = TEMP / f"{prefix}_{ts}.%(ext)s"
 
-    fmt = (
-        "bv*+ba/b"                     # SHORTS / REELS (fast)
-        if short else
-        "bv*[height<=720][fps<=30]+ba/b"  # NORMAL VIDEOS
-    )
+    if adult:
+        fmt = "best"
+    elif short:
+        fmt = "best[ext=mp4][filesize<8M]/best"
+    else:
+        fmt = "bv*[height<=720][fps<=30]+ba/b"
 
     ydl_opts = {
-        "outtmpl": str(out),
         "format": fmt,
+        "outtmpl": str(out),
         "merge_output_format": "mp4",
         "quiet": True,
-        "no_warnings": True,
+        "noplaylist": True,
     }
 
-    async with download_semaphore:
+    async with SEM:
         try:
             loop = asyncio.get_event_loop()
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 await loop.run_in_executor(None, ydl.download, [url])
-
-            for f in TEMP_DIR.glob(f"public_{ts}.*"):
-                return f
+            return next(TEMP.glob(f"{prefix}_{ts}.*"), None)
         except Exception as e:
-            logger.error(f"Public download failed: {e}")
+            log.error(f"Download failed: {e}")
             return None
 
-async def download_adult_video(url: str) -> Path | None:
-    ts = int(datetime.now().timestamp())
-    out = TEMP_DIR / f"adult_{ts}.%(ext)s"
-
-    # Adult sites prefer simple formats, no constraints
-    ydl_opts = {
-        "outtmpl": str(out),
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
-    }
-
-    async with download_semaphore:
-        try:
-            loop = asyncio.get_event_loop()
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                await loop.run_in_executor(None, ydl.download, [url])
-
-            for f in TEMP_DIR.glob(f"adult_{ts}.*"):
-                return f
-        except Exception as e:
-            logger.error(f"Adult download failed: {e}")
-            return None
-
-async def extract_mp3_from_video(video_path: Path) -> Path | None:
-    ts = int(datetime.now().timestamp())
-    out = TEMP_DIR / f"audio_{ts}.%(ext)s"
-
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": str(out),
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }],
-        "quiet": True,
-        "no_warnings": True,
-    }
-
+async def extract_mp3(video_path: Path) -> Path | None:
+    mp3 = video_path.with_suffix(".mp3")
     try:
-        loop = asyncio.get_event_loop()
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            await loop.run_in_executor(None, ydl.download, [video_path.as_uri()])
-
-        for f in TEMP_DIR.glob(f"audio_{ts}.*"):
-            return f
+        (
+            ffmpeg
+            .input(str(video_path))
+            .output(str(mp3), acodec="libmp3lame", ab="192k")
+            .overwrite_output()
+            .run(quiet=True)
+        )
+        return mp3 if mp3.exists() else None
     except Exception as e:
-        logger.error(f"MP3 extraction failed: {e}")
+        log.error(f"MP3 failed: {e}")
         return None
 
 # ───────────────── HANDLERS ─────────────────
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.text:
         return
@@ -172,134 +130,117 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = urls[0]
-    domain = normalize_domain(url)
+    d = domain(url)
     chat = msg.chat
-    is_private = chat.type == "private"
+    private = chat.type == "private"
 
-    try:
-        await msg.delete()
-    except:
-        pass
+    await msg.delete()
 
-    is_adult = any(d in domain for d in ADULT_DOMAINS)
-    is_public = any(d in domain for d in PUBLIC_DOMAINS)
+    is_adult = any(x in d for x in ADULT_DOMAINS)
+    is_public = any(x in d for x in PUBLIC_DOMAINS)
 
-    # ── GROUP + ADULT BLOCK ──
-    if is_adult and not is_private:
-        warn = await context.bot.send_message(
+    # Group authorization
+    if chat.type in ("group", "supergroup") and chat.id not in AUTHORIZED_GROUPS:
+        return
+
+    # Adult in group → redirect
+    if is_adult and not private:
+        kb = [[InlineKeyboardButton("🔞 Continue in Private", url=f"https://t.me/{ctx.bot.username}")]]
+        await ctx.bot.send_message(
             chat.id,
-            "🚫 Adult content is only available in private chat."
+            "🔒 Adult content is only allowed in private chat.",
+            reply_markup=InlineKeyboardMarkup(kb),
         )
-        await asyncio.sleep(5)
-        await warn.delete()
         return
 
     if not is_public and not is_adult:
         return
 
-    status = await context.bot.send_message(chat.id, premium_status(0))
+    status = await ctx.bot.send_message(chat.id, "⏳ Processing…")
 
     try:
-        await status.edit_text(premium_status(1))
-
-        if is_adult:
-            video = await download_adult_video(url)
-        else:
-            video = await download_public_video(url, is_short_form(url))
-
-        if not video:
+        await status.edit_text("⬇️ Downloading…")
+        vid = await download_video(url, is_short(url), is_adult)
+        if not vid:
             raise RuntimeError("download failed")
 
-        await status.edit_text(premium_status(3))
-
-        with open(video, "rb") as f:
-            sent = await context.bot.send_video(
+        with open(vid, "rb") as f:
+            sent = await ctx.bot.send_video(
                 chat.id,
                 f,
                 supports_streaming=True,
-                caption="✅ Download complete",
+                caption="✅ Ready",
             )
 
-        SENT_VIDEOS[sent.message_id] = video
+        VIDEO_STORE[sent.message_id] = vid
 
-        if chat.type in ("group", "supergroup") and not is_adult:
+        if chat.type in ("group", "supergroup"):
             try:
                 await sent.pin()
             except:
                 pass
 
         if is_adult:
-            note = await context.bot.send_message(
-                chat.id,
-                "🔒 This video will auto-delete in 5 minutes.\nSave it if needed."
-            )
-            await asyncio.sleep(300)
-            await sent.delete()
-            await note.delete()
+            asyncio.create_task(auto_delete(ctx.bot, chat.id, sent.message_id, ADULT_TTL))
 
     except Exception:
-        await status.edit_text("❌ Failed to process this video.")
+        await status.edit_text("❌ Failed to process video.")
     finally:
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         await status.delete()
 
-async def handle_mp3(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_mp3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg or not msg.reply_to_message:
+    if not msg.reply_to_message:
         return
 
     ref = msg.reply_to_message
-    if ref.message_id not in SENT_VIDEOS:
+    if ref.message_id not in VIDEO_STORE:
         return
 
+    await msg.delete()
+    wait = await ctx.bot.send_message(msg.chat.id, "🎵 Converting to MP3…")
+
     try:
-        await msg.delete()
+        mp3 = await extract_mp3(VIDEO_STORE[ref.message_id])
+        if not mp3:
+            raise RuntimeError
+        with open(mp3, "rb") as f:
+            await ctx.bot.send_audio(msg.chat.id, f)
     except:
-        pass
-
-    status = await context.bot.send_message(msg.chat.id, "🎵 Extracting audio…")
-
-    try:
-        audio = await extract_mp3_from_video(SENT_VIDEOS[ref.message_id])
-        if not audio:
-            raise RuntimeError("mp3 failed")
-
-        with open(audio, "rb") as f:
-            await context.bot.send_audio(
-                msg.chat.id,
-                f,
-                title="Audio",
-                performer="Downloader",
-            )
-
-    except Exception:
-        await status.edit_text("❌ Audio extraction failed.")
+        await ctx.bot.send_message(msg.chat.id, "❌ MP3 failed.")
     finally:
-        await asyncio.sleep(2)
-        await status.delete()
+        await wait.delete()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("ℹ️ How it works", callback_data="help")]]
     await update.message.reply_text(
         "🎬 **Premium Video Downloader**\n\n"
-        "• Paste a video link\n"
-        "• Bot deletes it instantly\n"
-        "• Downloads & sends video\n"
-        "• Shorts & Reels = lightning fast\n\n"
-        "_Reply `/mp3` to any video for audio_",
+        "• Paste a link\n"
+        "• Bot deletes it\n"
+        "• Lightning-fast download\n\n"
+        "_Shorts, Reels & Audio supported_",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown",
     )
 
-async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        "📌 Supported platforms:\n"
-        "YouTube • Instagram • TikTok • X • Facebook\n\n"
-        "• Groups: auto-pin\n"
-        "• Private: adult supported\n"
-        "• Fast • Clean • Reliable"
+        "• Groups must be authorized\n"
+        "• Adult content → Private only\n"
+        "• Reply /mp3 to get audio"
     )
+
+async def auth(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    try:
+        cid = int(ctx.args[0])
+        AUTHORIZED_GROUPS.add(cid)
+        await update.message.reply_text("✅ Group authorized")
+    except:
+        await update.message.reply_text("Usage: /auth <chat_id>")
 
 # ───────────────── MAIN ─────────────────
 def main():
@@ -307,10 +248,11 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mp3", handle_mp3))
+    app.add_handler(CommandHandler("auth", auth))
     app.add_handler(CallbackQueryHandler(help_cb, pattern="help"))
     app.add_handler(MessageHandler(filters.Regex(r"https?://"), handle_media))
 
-    logger.info("BOT READY (polling)")
+    log.info("BOT READY (polling)")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
