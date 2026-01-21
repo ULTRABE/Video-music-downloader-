@@ -1,46 +1,19 @@
-import re
-
-PLATFORMS = {
-    "youtube": {
-        "patterns": [
-            r"(youtube\.com/watch)",
-            r"(youtu\.be/)",
-            r"(youtube\.com/shorts)"
-        ],
-        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best"
-    },
-    "instagram": {
-        "patterns": [
-            r"(instagram\.com/p/)",
-            r"(instagram\.com/reel/)"
-        ],
-        "format": "best[ext=mp4]/best"
-    },
-    "tiktok": {
-        "patterns": [
-            r"(tiktok\.com/)"
-        ],
-        "format": "best[ext=mp4]/best"
-    },
-    "twitter": {
-        "patterns": [
-            r"(twitter\.com/)",
-            r"(x\.com/)"
-        ],
-        "format": "best[ext=mp4]/best"
-    },
-    "facebook": {
-        "patterns": [
-            r"(facebook\.com/)",
-            r"(fb\.watch/)"
-        ],
-        "format": "best[ext=mp4]/best"
-    }
-}
-
 def detect_platform(url: str):
-    for name, data in PLATFORMS.items():
-        for p in data["patterns"]:
-            if re.search(p, url, re.IGNORECASE):
-                return name, data["format"]
-    return None, None
+    """Returns dict or None - NEVER tuple/str"""
+    u = url.lower()
+
+    # Adult sites
+    adult_sites = ("pornhub", "xvideos", "xnxx", "xhamster", "youporn")
+    if any(x in u for x in adult_sites):
+        return {"adult": True, "format": "best[filesize<45M]/best"}
+
+    # YouTube
+    if "youtube" in u or "youtu.be" in u:
+        return {"adult": False, "format": "bestvideo[height<=720]+bestaudio/best[height<=720]"}
+
+    # Social media
+    social = ("instagram", "tiktok", "facebook", "twitter", "x.com")
+    if any(x in u for x in social):
+        return {"adult": False, "format": "best[filesize<45M]/best"}
+
+    return None  # ✅ Always dict or None
