@@ -1,41 +1,51 @@
 import re
-from utils.adult import is_adult
+from aiogram import Router
+from aiogram.types import Message
 from utils.state import save_adult_link, get_adult_link, is_premium_group
-from services.downloader import process_video
-from ui.keyboards import private_button
-from ui.text import ADULT_PM
+from ui.keyboards import adult_redirect_kb
 
-URL = re.compile(r"https?://\S+")
+messages_router = Router()
 
-async def handle_message(update, context):
-    msg = update.message
-    text = msg.text or msg.caption or ""
-    m = URL.search(text)
-    if not m:
+ADULT_DOMAINS = (
+    "pornhub.org",
+    "xvideos.com",
+    "xnxx.com",
+    "xhamster44.desi",
+    "youporn.com"
+)
+
+URL_RE = re.compile(r"https?://\S+")
+
+@messages_router.message()
+async def handle_links(message: Message):
+    if not message.text:
         return
 
-    url = m.group(0)
-    chat = msg.chat
-    user = msg.from_user.id
+    urls = URL_RE.findall(message.text)
+    if not urls:
+        return
 
-    try: await msg.delete()
-    except: pass
+    url = urls[0]
+    is_adult = any(d in url for d in ADULT_DOMAINS)
 
-    if is_adult(url):
-        if chat.type != "private" and not is_premium_group(chat.id):
-            save_adult_link(user, url)
-            me = await context.bot.get_me()
-            await context.bot.send_message(
-                chat.id,
-                "🔞 Adult content → private only",
-                reply_markup=private_button(me.username)
+    # GROUP LOGIC
+    if message.chat.type in ("group", "supergroup"):
+        if is_adult:
+            await message.delete()
+            save_adult_link(message.from_user.id, url)
+            await message.answer(
+                "Adult content → continue in private",
+                reply_markup=adult_redirect_kb()
             )
-            return
-
-        await process_video(update, context, url, pin=True, auto_delete=True)
+        else:
+            await message.answer("Normal video detected (GC logic placeholder)")
         return
 
-    if is_premium_group(chat.id):
-        return  # normal videos disabled
+    # PRIVATE LOGIC
+    if message.chat.type == "private":
+        stored = get_adult_link(message.from_user.id)
+        final_url = stored or url
 
-    await process_video(update, context, url, pin=True)
+        await message.answer(
+            f"Downloading:\n{final_url}\n\n(This will auto-delete in 1 min)"
+        )
