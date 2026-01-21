@@ -1,19 +1,18 @@
-def detect_platform(url: str):
-    """Returns dict or None - NEVER tuple/str"""
-    u = url.lower()
+def detect_platform(url: str) -> dict | None:
+    """ALWAYS returns dict or None - NEVER str/tuple"""
+    u = url.lower().strip()
 
-    # Adult sites
-    adult_sites = ("pornhub", "xvideos", "xnxx", "xhamster", "youporn")
-    if any(x in u for x in adult_sites):
+    # Adult platforms
+    if any(site in u for site in ["pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com", "youporn.com"]):
         return {"adult": True, "format": "best[filesize<45M]/best"}
 
     # YouTube
-    if "youtube" in u or "youtu.be" in u:
+    if "youtube.com" in u or "youtu.be" in u or "youtu.com" in u:
         return {"adult": False, "format": "bestvideo[height<=720]+bestaudio/best[height<=720]"}
 
     # Social media
-    social = ("instagram", "tiktok", "facebook", "twitter", "x.com")
-    if any(x in u for x in social):
+    social_keywords = ["instagram.com", "tiktok.com", "facebook.com", "twitter.com", "x.com"]
+    if any(kw in u for kw in social_keywords):
         return {"adult": False, "format": "best[filesize<45M]/best"}
 
-    return None  # ✅ Always dict or None
+    return None  # ✅ CRITICAL: Always dict or None
