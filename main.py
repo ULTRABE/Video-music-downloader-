@@ -48,7 +48,7 @@ PUBLIC_DOMAINS = {
 ADULT_DOMAINS = {
     "pornhub.com",
     "xvideos.com",
-    "xhamster.com",
+    "xhamster44.desi",
     "xnxx.com",
     "youporn.com",
 }
