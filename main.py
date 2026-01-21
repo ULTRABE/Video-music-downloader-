@@ -1,20 +1,23 @@
-from telegram.ext import *
+import asyncio
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+
 from config import BOT_TOKEN
-from handlers.messages import handle_message
-from handlers.start import start
-from handlers.admin import chatid, premium
-from handlers.callbacks import handle_callback
+from handlers.start import start_router
+from handlers.messages import messages_router
+from handlers.admin import admin_router
+from handlers.callbacks import callbacks_router
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+async def main():
+    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+    dp = Dispatcher()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("chatid", chatid))
-    app.add_handler(CommandHandler("premium", premium))
-    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
+    dp.include_router(start_router)
+    dp.include_router(admin_router)
+    dp.include_router(callbacks_router)
+    dp.include_router(messages_router)
 
-    app.run_polling(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
