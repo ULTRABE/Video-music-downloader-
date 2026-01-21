@@ -6,7 +6,7 @@ def adult_redirect_kb():
             [
                 InlineKeyboardButton(
                     text="Continue in Private",
-                    url="https://t.me/YourBotUsername?start=adult"
+                    url="https://t.me/@nagudownloaderbot?start=adult"
                 )
             ]
         ]
