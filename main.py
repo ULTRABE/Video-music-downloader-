@@ -1,351 +1,328 @@
+#!/usr/bin/env python3.11
+"""
+Production Telegram Media Downloader Bot
+Webhook-only • Railway-safe • Long-running stable
+"""
+
 import os
 import re
 import asyncio
 import logging
+import shutil
 import signal
-import psutil
+import subprocess
+import time
 from pathlib import Path
-from typing import Dict, Set, Optional
-import aiohttp
-from telegram import Update, Bot
-from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes
-from telegram.constants import ParseMode
-import yt_dlp
+from urllib.parse import urlparse
 
-# ---------------- CONFIG ----------------
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
+# ───────────────── LOGGING ─────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("media-bot")
 
+# ───────────────── ENV ─────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-assert BOT_TOKEN, "BOT_TOKEN required"
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+PUBLIC_URL = os.getenv("PUBLIC_URL")  # REQUIRED
+PORT = int(os.getenv("PORT", "8080"))
 
-TEMP_DIR = Path("/tmp/downloads")
-TEMP_DIR.mkdir(exist_ok=True)
+if not BOT_TOKEN or not WEBHOOK_SECRET or not PUBLIC_URL:
+    raise RuntimeError("BOT_TOKEN, WEBHOOK_SECRET, PUBLIC_URL must be set")
 
-# State
-queues: Dict[int, asyncio.Queue] = {}
-active_downloads: Dict[int, bool] = {}
-user_cooldown: Dict[int, float] = {}
+# ───────────────── CONSTANTS ─────────────────
+BASE_DIR = Path("/tmp/media_bot")
+BASE_DIR.mkdir(exist_ok=True)
 
-# Adult site blacklist (PRIVATE ONLY)
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(2)
+ACTIVE_PROCS: set[subprocess.Popen] = set()
+
+PUBLIC_DOMAINS = {
+    "youtube.com", "youtu.be",
+    "instagram.com",
+    "facebook.com", "fb.watch",
+    "twitter.com", "x.com",
+    "tiktok.com",
+}
+
 ADULT_DOMAINS = {
-    'pornhub.com', 'xvideos.com', 'xhamster.com', 'xnxx.com', 'youporn.com',
-    'redtube.com', 'tube8.com', 'spankbang.com', 'motherless.com', 'efukt.com'
+    "pornhub.com", "xvideos.com",
+    "xhamster.com", "xnxx.com",
+    "youporn.com",
 }
 
-# Supported mainstream domains
-SUPPORTED_DOMAINS = {
-    'youtube.com', 'youtu.be', 'instagram.com', 'tiktok.com', 'twitter.com',
-    'x.com', 'facebook.com', 'vimeo.com', 'dailymotion.com', 'reddit.com',
-    'snapchat.com', 'pinterest.com', 'soundcloud.com', 'bilibili.com'
-}
+SHORT_PATH_MARKERS = ("/shorts", "/reel", "/reels")
 
-# yt-dlp cleanup task
-cleanup_tasks: Set[asyncio.Task] = set()
+# message_id -> (video_path, timestamp)
+KNOWN_VIDEOS: dict[int, tuple[Path, float]] = {}
+KNOWN_VIDEO_TTL = 600  # 10 minutes
 
-async def cleanup_temp_files():
-    """Clean all temp files every 30s."""
-    while True:
-        try:
-            for f in TEMP_DIR.glob("*.mp4"):
-                if asyncio.get_event_loop().time() - f.stat().st_mtime > 300:
-                    f.unlink(missing_ok=True)
-        except:
-            pass
-        await asyncio.sleep(30)
+# ───────────────── UTILITIES ─────────────────
+def normalize_domain(url: str) -> str:
+    netloc = urlparse(url).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    parts = netloc.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
 
-def kill_orphans():
-    """Kill yt-dlp/ffmpeg orphans."""
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            if 'yt-dlp' in ' '.join(proc.info['cmdline'] or []) or 'ffmpeg' in proc.info['name']:
-                proc.terminate()
-        except:
-            pass
+def is_short(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return any(p in path for p in SHORT_PATH_MARKERS) or "tiktok.com" in url
 
-def extract_urls(text: str) -> list[str]:
-    """Extract valid URLs."""
-    pattern = r'https?://[^\s<>"]{10,}'
-    return re.findall(pattern, text)
-
-def is_supported(url: str, check_adult: bool = False) -> tuple[bool, bool]:
-    """Check if URL supported. Returns (supported, is_adult)."""
-    domain = re.search(r'://([^/]+)', url)
-    if not domain:
-        return False, False
-    
-    dom = domain.group(1).lower()
-    is_adult = dom in ADULT_DOMAINS
-    
-    if check_adult:
-        return dom in SUPPORTED_DOMAINS or is_adult, is_adult
-    
-    return dom in SUPPORTED_DOMAINS, False
-
-async def smart_download(url: str, chat_id: int, status_msg_id: int) -> Optional[Path]:
-    """Production yt-dlp download."""
-    output_path = TEMP_DIR / f"dl_{chat_id}_{asyncio.get_event_loop().time():.0f}.mp4"
-    
-    # Smart format selection
-    ydl_opts = {
-        'format': 'best[ext=mp4][height<=1080][fps<=30]/best[height<=1080][fps<=30]/best[height<=720]',
-        'outtmpl': str(output_path),
-        'merge_output_format': 'mp4',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-    }
-    
+async def kill_proc(proc: subprocess.Popen):
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            await asyncio.to_thread(ydl.download, [url])
-        
-        if output_path.exists() and output_path.stat().st_size > 10_000_000:  # 10MB min
-            return output_path
-            
-    except Exception:
+        if proc.poll() is None:
+            proc.terminate()
+            await asyncio.sleep(1)
+            if proc.poll() is None:
+                proc.kill()
+    except:
         pass
-    
-    # Cleanup on fail
-    if output_path.exists():
-        output_path.unlink(missing_ok=True)
-    
-    return None
+    ACTIVE_PROCS.discard(proc)
 
-async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
-    """Core processing logic."""
-    chat = update.effective_chat
-    chat_id = chat.id
-    user_id = update.effective_user.id
-    
-    # Cooldown
-    now = asyncio.get_event_loop().time()
-    if user_id in user_cooldown and now - user_cooldown[user_id] < 3:
-        return
-    user_cooldown[user_id] = now
-    
-    # Rate limit per chat
-    if chat_id not in queues:
-        queues[chat_id] = asyncio.Queue(maxsize=3)
-    
-    q = queues[chat_id]
-    if not q.empty() and active_downloads.get(chat_id):
-        return
-    
-    # Status message
-    status_msg = await context.bot.send_message(
-        chat_id, "⬇️ Processing media...", parse_mode=ParseMode.HTML
-    )
-    
-    # Queue task
-    task = asyncio.create_task(worker(chat_id, url, status_msg.message_id, context.bot))
-    cleanup_tasks.add(task)
-    task.add_done(lambda t: cleanup_tasks.discard(t))
+async def cleanup_known_videos():
+    while True:
+        now = time.time()
+        for mid, (path, ts) in list(KNOWN_VIDEOS.items()):
+            if now - ts > KNOWN_VIDEO_TTL:
+                KNOWN_VIDEOS.pop(mid, None)
+                try:
+                    path.unlink(missing_ok=True)
+                except:
+                    pass
+        await asyncio.sleep(60)
 
-async def worker(chat_id: int, url: str, status_id: int, bot: Bot):
-    """Background worker."""
-    active_downloads[chat_id] = True
-    
-    try:
-        chat = await bot.get_chat(chat_id)
-        is_group = chat.type != 'private'
-        
-        # Adult check
-        supported, is_adult = is_supported(url, check_adult=is_group)
-        
-        if not supported:
-            await bot.edit_message_text(
-                "🚫 This content isn't supported here.",
-                chat_id, status_id
-            )
-            await asyncio.sleep(3)
-            await bot.delete_message(chat_id, status_id)
-            return
-        
-        if is_group and is_adult:
-            await bot.edit_message_text(
-                "🚫 This content isn't supported here.",
-                chat_id, status_id
-            )
-            await asyncio.sleep(3)
-            await bot.delete_message(chat_id, status_id)
-            return
-        
-        # Download
-        file_path = await smart_download(url, chat_id, status_id)
-        if not file_path:
-            await bot.edit_message_text(
-                "❌ Failed to process media.",
-                chat_id, status_id
-            )
-            await asyncio.sleep(3)
-            await bot.delete_message(chat_id, status_id)
-            return
-        
-        # Send video
-        with open(file_path, 'rb') as video:
-            sent_msg = await bot.send_video(
-                chat_id, video,
-                supports_streaming=True,
-                caption="✅ Media ready!",
-                parse_mode=ParseMode.HTML,
-                timeout=120
-            )
-        
-        # Cleanup status
+# ───────────────── DOWNLOAD ─────────────────
+async def download_video(url: str, out_dir: Path) -> Path | None:
+    out_dir.mkdir(exist_ok=True)
+    template = out_dir / "video.%(ext)s"
+
+    if is_short(url):
+        fmt = "best[ext=mp4][filesize<5M]/best[ext=mp4]"
+    else:
+        fmt = "bestvideo[ext=mp4][height<=720][fps<=30]+bestaudio/best[ext=m4a]/best"
+
+    cmd = [
+        "yt-dlp",
+        "--quiet",
+        "--no-warnings",
+        "--no-playlist",
+        "-f", fmt,
+        "--merge-output-format", "mp4",
+        "-o", str(template),
+        url,
+    ]
+
+    async with DOWNLOAD_SEMAPHORE:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        ACTIVE_PROCS.add(proc)
         try:
-            await bot.delete_message(chat_id, status_id)
-        except:
-            pass
-        
-        # Pin in groups
-        if is_group:
-            try:
-                await bot.pin_chat_message(chat_id, sent_msg.message_id)
-            except:
-                pass
-        
-    except Exception as e:
-        logger.error(f"Worker error: {e}")
-    finally:
-        if 'file_path' in locals() and file_path.exists():
-            file_path.unlink(missing_ok=True)
-        active_downloads.pop(chat_id, None)
-        kill_orphans()
+            await asyncio.wait_for(proc.communicate(), timeout=90)
+        except asyncio.TimeoutError:
+            await kill_proc(proc)
+            return None
+        finally:
+            ACTIVE_PROCS.discard(proc)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main message handler."""
-    text = update.message.text or ""
-    urls = extract_urls(text)
-    
+    files = list(out_dir.glob("video.*"))
+    return files[0] if files else None
+
+# ───────────────── MP3 ─────────────────
+async def extract_mp3(video: Path) -> Path | None:
+    mp3 = video.with_suffix(".mp3")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video),
+        "-vn",
+        "-acodec", "libmp3lame",
+        "-ab", "192k",
+        str(mp3),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    ACTIVE_PROCS.add(proc)
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        await kill_proc(proc)
+        return None
+    finally:
+        ACTIVE_PROCS.discard(proc)
+    return mp3 if mp3.exists() else None
+
+# ───────────────── HANDLERS ─────────────────
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg or not msg.text:
+        return
+
+    urls = re.findall(r"https?://\S+", msg.text)
     if not urls:
         return
-    
-    # Delete original message instantly
+
+    url = urls[0]
+    domain = normalize_domain(url)
+    chat = msg.chat
+
     try:
-        await update.message.delete()
+        await msg.delete()
     except:
         pass
-    
-    # Process first valid URL only
-    for url in urls:
-        if is_supported(url)[0]:
-            await process_link(update, context, url)
-            break
+
+    is_adult = domain in ADULT_DOMAINS
+    is_public = domain in PUBLIC_DOMAINS
+
+    if is_adult and chat.type != chat.PRIVATE:
+        warn = await context.bot.send_message(chat.id, "🚫 This content isn't supported here.")
+        asyncio.create_task(context.bot.delete_message(chat.id, warn.message_id))
+        return
+
+    if not is_public and not is_adult:
+        return
+
+    status = await context.bot.send_message(chat.id, "⬇️ Processing media…")
+
+    try:
+        work = BASE_DIR / f"{chat.id}_{msg.message_id}"
+        video = await download_video(url, work)
+        if not video:
+            raise RuntimeError("download failed")
+
+        caption = ""
+        ttl = 0
+        if is_adult:
+            caption = (
+                "🔒 This video will be deleted in 5 minutes.\n"
+                "Forward it to Saved Messages if you want to keep it."
+            )
+            ttl = 300
+
+        with open(video, "rb") as f:
+            sent = await context.bot.send_video(
+                chat.id,
+                f,
+                caption=caption,
+                supports_streaming=True,
+            )
+
+        KNOWN_VIDEOS[sent.message_id] = (video, time.time())
+
+        if chat.type in (chat.GROUP, chat.SUPERGROUP) and not is_adult:
+            try:
+                await context.bot.pin_chat_message(chat.id, sent.message_id)
+            except:
+                pass
+
+        if ttl:
+            asyncio.create_task(context.bot.delete_message(chat.id, sent.message_id))
+
+    except Exception:
+        fail = await context.bot.send_message(chat.id, "❌ Failed to process media.")
+        asyncio.create_task(context.bot.delete_message(chat.id, fail.message_id))
+    finally:
+        try:
+            await context.bot.delete_message(chat.id, status.message_id)
+        except:
+            pass
+
+async def handle_mp3(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg or not msg.reply_to_message:
+        return
+
+    ref = msg.reply_to_message
+    if ref.message_id not in KNOWN_VIDEOS:
+        return
+
+    try:
+        await msg.delete()
+    except:
+        pass
+
+    status = await context.bot.send_message(msg.chat.id, "🎵 Extracting audio…")
+    try:
+        video, _ = KNOWN_VIDEOS.pop(ref.message_id)
+        mp3 = await extract_mp3(video)
+        if mp3:
+            with open(mp3, "rb") as f:
+                await context.bot.send_audio(msg.chat.id, f)
+    finally:
+        await context.bot.delete_message(msg.chat.id, status.message_id)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Minimal /start."""
-    text = """
-🎥 Media Downloader
-
-Send a video link. That's it.
-
-Works in groups & private chats.
-    """
-    keyboard = [[InlineKeyboardButton("ℹ️ How it works", callback_data="help")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    kb = [[InlineKeyboardButton("ℹ️ How it works", callback_data="help")]]
     await update.message.reply_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+        "🎥 Media Downloader\n\n"
+        "Send a supported video link.\n"
+        "The rest is automatic.\n\n"
+        "Works in groups and private chats.",
+        reply_markup=InlineKeyboardMarkup(kb),
     )
 
-async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """How it works."""
-    query = update.callback_query
-    await query.answer()
-    
-    text = """
-📋 Usage:
+async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        "Send a video link.\n"
+        "Bot deletes it, downloads, sends video, and pins it in groups.\n\n"
+        "Reply /mp3 to extract audio."
+    )
 
-1️⃣ Send video link
-2️⃣ Bot deletes it instantly  
-3️⃣ Bot sends processed video
-4️⃣ Auto-pins in groups
+# ───────────────── SHUTDOWN ─────────────────
+async def shutdown():
+    for p in list(ACTIVE_PROCS):
+        await kill_proc(p)
+    shutil.rmtree(BASE_DIR, ignore_errors=True)
 
-✅ Supports 25+ platforms
-⚡ Optimized for speed
-🎥 1080p max quality
-    """
-    
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+def sig_handler(*_):
+    asyncio.create_task(shutdown())
+    raise SystemExit
 
-# ---------------- RAILWAY VPS STABILITY ----------------
-async def railway_health():
-    """Prevent Railway idle timeout."""
-    while True:
-        await asyncio.sleep(30)
-
-async def shutdown(app: Application):
-    """Graceful shutdown."""
-    logger.info("Shutting down...")
-    kill_orphans()
-    
-    # Cancel all cleanup tasks
-    for task in cleanup_tasks.copy():
-        task.cancel()
-    
-    # Clear queues
-    queues.clear()
-    
-    logger.info("Shutdown complete")
-
-def signal_handler(signum, frame):
-    """Handle SIGTERM/SIGINT."""
-    logger.info(f"Received signal {signum}")
-    loop = asyncio.get_event_loop()
-    loop.create_task(shutdown(application))
-    loop.stop()
-
-# ---------------- MAIN ----------------
+# ───────────────── MAIN ─────────────────
 async def main():
-    """Production main."""
-    global application
-    
-    # Startup
-    kill_orphans()
-    
-    # Update yt-dlp
-    try:
-        import yt_dlp
-        yt_dlp.YoutubeDL({'quiet': True}).update()
-    except:
-        pass
-    
-    # Application
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(help_callback, pattern="help"))
-    
-    # Background tasks
-    asyncio.create_task(cleanup_temp_files())
-    asyncio.create_task(railway_health())
-    
-    logger.info("🤖 BOT READY")
-    
-    # Railway polling
-    await application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        close_loop=False,
-        timeout=45,
-        read_timeout=30,
-        write_timeout=30,
-        connect_timeout=20,
-        pool_timeout=20
+    signal.signal(signal.SIGTERM, sig_handler)
+    signal.signal(signal.SIGINT, sig_handler)
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("mp3", handle_mp3))
+    app.add_handler(CallbackQueryHandler(help_cb, pattern="help"))
+    app.add_handler(MessageHandler(filters.Regex(r"https?://"), handle_media))
+
+    asyncio.create_task(cleanup_known_videos())
+
+    await app.bot.set_webhook(
+        url=f"{PUBLIC_URL}/{WEBHOOK_SECRET}",
+        secret_token=WEBHOOK_SECRET,
+        drop_pending_updates=True,
+    )
+
+    logger.info("BOT READY")
+
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_path=f"/{WEBHOOK_SECRET}",
+        webhook_secret=WEBHOOK_SECRET,
     )
 
 if __name__ == "__main__":
-    # Signal handlers for Railway
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
