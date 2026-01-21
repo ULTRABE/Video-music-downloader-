@@ -1,10 +1,15 @@
-from utils.state import get_adult_link
-from ui.text import ADULT_PM
-from services.downloader import process_video
+from aiogram import Router
+from aiogram.types import Message
 
-async def start(update, context):
-    if context.args and context.args[0] == "adult":
-        await update.message.reply_text(ADULT_PM, parse_mode="Markdown")
-        link = get_adult_link(update.effective_user.id)
-        if link:
-            await process_video(update, context, link, auto_delete=True)
+start_router = Router()
+
+@start_router.message()
+async def start_cmd(message: Message):
+    if message.text != "/start":
+        return
+
+    await message.reply(
+        "Send a video link.\n"
+        "Adult links work only in private.\n"
+        "Files auto-delete after 1 minute."
+    )
