@@ -1,63 +1,62 @@
-import yt_dlp, asyncio, uuid
-from pathlib import Path
-from config import *
-from utils.progress import bar
-from ui.keyboards import cancel_button
+import asyncio, os, uuid, subprocess
+from config import TEMP_DIR, MAX_MB, ADULT_TTL
+from utils.state import cancelled
+from ui.keyboards import cancel_kb
 
-ACTIVE = {}
-SEM = asyncio.Semaphore(GLOBAL_DOWNLOADS)
+async def download_video(msg, url, pin=False, adult=False):
+    bot = msg.bot
+    chat = msg.chat.id
+    task_id = str(uuid.uuid4())
 
-def clean(name):
-    return "".join(c if c.isalnum() or c in " ._-" else "_" for c in name)[:120]
-
-async def process_video(update, context, url, pin=False, auto_delete=False):
-    chat = update.effective_chat.id
-    task = str(uuid.uuid4())
-    ACTIVE[task] = True
-
-    status = await context.bot.send_message(
-        chat, f"Downloading\n{bar(1)}", reply_markup=cancel_button(task)
+    status = await msg.answer(
+        "⬇️ Downloading...",
+        reply_markup=cancel_kb(task_id)
     )
 
-    async with SEM:
-        if not ACTIVE.get(task):
+    out = TEMP_DIR / f"{task_id}.mp4"
+
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp", "-f", "best", "-o", str(out), url,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    while proc.returncode is None:
+        if cancelled(task_id):
+            proc.kill()
+            await status.edit_text("❌ Cancelled")
             return
+        await asyncio.sleep(1)
+        await proc.poll()
 
-        opts = {
-            "quiet": True,
-            "format": "best[height<=720]/best",
-            "outtmpl": str(TEMP_DIR / "%(title)s.%(ext)s"),
-            "merge_output_format": "mp4"
-        }
+    size_mb = out.stat().st_size / (1024 * 1024)
 
-        with yt_dlp.YoutubeDL(opts) as y:
-            info = y.extract_info(url, download=True)
-            path = Path(y.prepare_filename(info)).with_suffix(".mp4")
+    await status.edit_text("📤 Uploading...")
 
-        title = clean(path.stem)
-        size = path.stat().st_size / (1024*1024)
+    if size_mb <= MAX_MB:
+        sent = await bot.send_video(chat, out.open("rb"))
+    else:
+        sent = await bot.send_document(
+            chat,
+            out.open("rb"),
+            caption="This video exceeded 45 MB and was sent as a document."
+        )
 
-        if size <= MAX_VIDEO_MB:
-            sent = await context.bot.send_video(chat, open(path,"rb"), caption=title)
-        else:
-            sent = await context.bot.send_document(
-                chat, open(path,"rb"),
-                filename=f"{title}.mp4",
-                caption="This video exceeded the 45 MB limit, so it was sent as a document."
-            )
+    if pin:
+        try:
+            await bot.pin_chat_message(chat, sent.message_id)
+        except:
+            pass
 
-        if pin:
-            try:
-                await context.bot.pin_chat_message(chat, sent.message_id, disable_notification=True)
-            except:
-                pass
+    await status.delete()
 
-        if auto_delete:
-            await asyncio.sleep(60)
-            try:
-                await sent.delete()
-            except:
-                pass
+    if adult:
+        warn = await bot.send_message(
+            chat,
+            "⚠️ This message will be deleted in 1 minute. Save it."
+        )
+        await asyncio.sleep(ADULT_TTL)
+        await sent.delete()
+        await warn.delete()
 
-        await status.delete()
-        ACTIVE.pop(task, None)
+    out.unlink(missing_ok=True)
