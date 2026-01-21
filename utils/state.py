@@ -1,39 +1,43 @@
 import os
 import redis
 
-_redis = None
+REDIS_URL = os.getenv("REDIS_URL")
+r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-def r():
-    global _redis
-    if _redis:
-        return _redis
-    url = os.getenv("REDIS_URL")
-    if not url:
-        raise RuntimeError("REDIS_URL missing")
-    _redis = redis.Redis.from_url(url, decode_responses=True)
-    return _redis
+# ── KEYS ────────────────────────────────────────────
+def _adult_key(user_id): 
+    return f"adult:{user_id}"
 
-# ── Adult link memory ─────────────────────────
-def save_adult(user_id, link):
-    r().setex(f"adult:{user_id}", 300, link)
+def _premium_key(chat_id): 
+    return f"premium:{chat_id}"
 
-def pop_adult(user_id):
-    key = f"adult:{user_id}"
-    val = r().get(key)
-    if val:
-        r().delete(key)
-    return val
+def _cancel_key(task_id):
+    return f"cancel:{task_id}"
 
-# ── Premium groups ───────────────────────────
-def set_premium(chat_id):
-    r().sadd("premium_groups", chat_id)
+# ── ADULT LINK MEMORY ───────────────────────────────
+def save_adult(user_id: int, url: str):
+    r.setex(_adult_key(user_id), 300, url)  # 5 min memory
 
-def is_premium(chat_id):
-    return r().sismember("premium_groups", chat_id)
+def pop_adult(user_id: int):
+    key = _adult_key(user_id)
+    url = r.get(key)
+    if url:
+        r.delete(key)
+    return url
 
-# ── Cancel download ──────────────────────────
-def cancel(task_id):
-    r().setex(f"cancel:{task_id}", 300, "1")
+# ── PREMIUM GROUPS ──────────────────────────────────
+def set_premium(chat_id: int):
+    r.set(_premium_key(chat_id), "1")
 
-def cancelled(task_id):
-    return r().exists(f"cancel:{task_id}") == 1
+def is_premium_group(chat_id: int) -> bool:
+    return r.exists(_premium_key(chat_id)) == 1
+
+# ── CANCEL DOWNLOAD SUPPORT ─────────────────────────
+def mark_cancelled(task_id: str):
+    r.setex(_cancel_key(task_id), 600, "1")
+
+def is_cancelled(task_id: str) -> bool:
+    return r.exists(_cancel_key(task_id)) == 1
+
+def clear_cancel(task_id: str):
+    r.delete(_cancel_key(task_id))
