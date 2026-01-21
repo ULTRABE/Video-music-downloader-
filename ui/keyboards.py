@@ -1,11 +1,13 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def private_button(bot):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔒 Download in Private", url=f"https://t.me/{bot}?start=adult")]
-    ])
-
-def cancel_button(task):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{task}")]
-    ])
+def adult_redirect_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Continue in Private",
+                    url="https://t.me/YourBotUsername?start=adult"
+                )
+            ]
+        ]
+    )
